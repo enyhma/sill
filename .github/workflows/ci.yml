@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out sill
+        uses: actions/checkout@v4
+        with:
+          path: sill
+
+      # sill depends on hearth via a local go.mod replace (hearth isn't
+      # published as a module yet — see sill's DEC-NqI23Hxjzx). The
+      # replace path in the committed go.mod matches this developer's
+      # local folder naming, not CI's checkout layout, so it's rewritten
+      # below rather than relying on a matching directory name.
+      - name: Check out hearth
+        uses: actions/checkout@v4
+        with:
+          repository: enyhma/hearth
+          path: hearth
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+
+      - name: Point sill's hearth dependency at this checkout
+        working-directory: sill
+        run: go mod edit -replace github.com/enyhma/hearth=../hearth
+
+      - name: Build
+        working-directory: sill
+        run: go build ./...
+
+      - name: Vet
+        working-directory: sill
+        run: go vet ./...
+
+      - name: Test
+        working-directory: sill
+        run: go test ./...

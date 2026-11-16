@@ -1,0 +1,20 @@
+# Real-world Obsidian vaults used to validate sill against actual vault
+# structures and .base files, not just the Bases spec's own documented
+# examples. Sourced from:
+# https://forum.obsidian.md/t/14-example-vaults-from-around-the-web-kepano-nick-milo-the-sweet-setup-and-more/81788
+#
+# Each is pinned to a specific commit for deterministic CI — bump a pin
+# deliberately (and re-run validate-vaults.sh locally first) when you
+# want to pick up a vault's own changes, not automatically. An upstream
+# vault changing out from under this suite should never be what breaks a
+# build.
+#
+# format: owner/repo sha
+kepano/kepano-obsidian 473697347a0eaac790a6596229c741b3915f3b77
+s-blu/obsidian_dataview_example_vault dfc8022fcc9923a0e8755362a0b0943b34203970
+ashu-otaku/Personal-Wiki 1ba41b9656705254ea1faf3f6b99c9f8b9fbb3ab
+r-u-s-h-i-k-e-s-h/Obsidian-CSS-Snippets c70824edd51a3a2b4a7e58e765722960a5b8c969
+Pamela-Wang/Obsidian-Starter-Vaults 555fb26656f708cb472ed6b0c9916818ee60053f
+erazlogo/obsidian-history-vault a3d22d0a9ecf5592db40ef3a6a53b356553a4295
+SoRobby/ObsidianStarterVault 2be66d84abc78d643a3249469f6d69eaf95d95ec
+DuskWasHere/dusk-obsidian-vault 69fd1e725e21557b9eb7d706ccaa0834288085cb

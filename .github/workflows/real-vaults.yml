@@ -1,0 +1,61 @@
+name: Validate against real vaults
+
+# Runs sill's query command against real-world Obsidian vaults (see
+# scripts/vaults.txt) — catches regressions a synthetic unit test won't,
+# the way the last several bug fixes in this repo's history were
+# actually found (e.g. list.filter's lambda binding, "this" silently
+# matching every note, nil.contains() aborting an entire query). Runs
+# automatically when evaluator-relevant code changes, plus weekly and
+# on-demand as a standing check independent of any particular commit.
+on:
+  push:
+    paths:
+      - "*.go"
+      - "cmd/**"
+      - "scripts/**"
+      - ".github/workflows/real-vaults.yml"
+  pull_request:
+    paths:
+      - "*.go"
+      - "cmd/**"
+      - "scripts/**"
+      - ".github/workflows/real-vaults.yml"
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out sill
+        uses: actions/checkout@v4
+        with:
+          path: sill
+
+      - name: Check out hearth
+        uses: actions/checkout@v4
+        with:
+          repository: enyhma/hearth
+          path: hearth
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+
+      - name: Point sill's hearth dependency at this checkout
+        working-directory: sill
+        run: go mod edit -replace github.com/enyhma/hearth=../hearth
+
+      - name: Build the sill binary
+        working-directory: sill
+        run: go build -o sill-bin ./cmd/sill
+
+      - name: Clone the real-world vaults
+        working-directory: sill
+        run: ./scripts/clone-example-vaults.sh vaults
+
+      - name: Validate every vault and every real .base file found
+        working-directory: sill
+        run: ./scripts/validate-vaults.sh vaults ./sill-bin
