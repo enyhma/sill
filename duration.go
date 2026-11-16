@@ -25,6 +25,29 @@ func (d duration) addTo(t time.Time) time.Time {
 	return t.AddDate(d.Years, d.Months, d.Days).Add(d.Clock)
 }
 
+// formatDuration renders a duration for string contexts (toString(),
+// string concatenation). Not a documented Bases format — there is no
+// duration.format() in the spec — just a readable fallback.
+func formatDuration(d duration) string {
+	var parts []string
+	if d.Years != 0 {
+		parts = append(parts, fmt.Sprintf("%dy", d.Years))
+	}
+	if d.Months != 0 {
+		parts = append(parts, fmt.Sprintf("%dM", d.Months))
+	}
+	if d.Days != 0 {
+		parts = append(parts, fmt.Sprintf("%dd", d.Days))
+	}
+	if d.Clock != 0 {
+		parts = append(parts, d.Clock.String())
+	}
+	if len(parts) == 0 {
+		return "0s"
+	}
+	return strings.Join(parts, " ")
+}
+
 var durationRe = regexp.MustCompile(`^(-?\d+(?:\.\d+)?)\s*(years?|months?|weeks?|days?|hours?|minutes?|seconds?|[yMwdhms])$`)
 
 // parseDuration parses a Bases duration string, e.g. "1M", "2h", "5 days".

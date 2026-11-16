@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"strings"
 	"time"
 )
 
@@ -32,6 +33,17 @@ type EvalContext struct {
 type noteRoot struct{}
 type fileRoot struct{}
 type formulaRoot struct{}
+
+// link is the value produced by the global link() function and by
+// file.asLink() — a lightweight path+display wrapper. Resolving it back
+// to a File (link.asFile()) or querying its target note's own links
+// (link.linksTo()) needs vault-wide note lookup, which EvalContext does
+// not provide yet; those two methods are stubbed in functions.go until a
+// capability for cross-note resolution exists.
+type link struct {
+	Path    string
+	Display string
+}
 
 // EvalExpr parses and evaluates a single expression string — a filter
 // statement or a formula body — against ctx.
@@ -163,7 +175,7 @@ func eval(e Expr, ctx *EvalContext) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return callMethod(t, n.Name, args)
+		return callMethod(t, n.Name, args, ctx)
 
 	case *unaryExpr:
 		x, err := eval(n.X, ctx)
@@ -423,12 +435,29 @@ func toNumber(v any) (float64, bool) {
 
 func toDisplayString(v any) string {
 	switch t := v.(type) {
-	case string:
-		return t
 	case nil:
 		return ""
+	case string:
+		return t
 	case float64:
 		return formatFloat(t)
+	case bool:
+		if t {
+			return "true"
+		}
+		return "false"
+	case time.Time:
+		return t.Format("2006-01-02 15:04:05")
+	case duration:
+		return formatDuration(t)
+	case link:
+		return t.Path
+	case []any:
+		parts := make([]string, len(t))
+		for i, e := range t {
+			parts[i] = toDisplayString(e)
+		}
+		return strings.Join(parts, ", ")
 	default:
 		return fmt.Sprintf("%v", t)
 	}
@@ -460,6 +489,8 @@ func typeName(v any) string {
 		return "list"
 	case map[string]any:
 		return "object"
+	case link:
+		return "link"
 	case noteRoot:
 		return "note"
 	case fileRoot:
