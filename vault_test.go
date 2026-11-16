@@ -80,6 +80,66 @@ func TestLoadVault_SkipsCodeFenceTag(t *testing.T) {
 	}
 }
 
+// TestLoadVault_CrossNoteResolution is the fix for a real gap: EvalContext
+// used to be built per-note in isolation, so file(), link.asFile(), and
+// link.linksTo() had no way to look up any OTHER note even though
+// LoadVault already has the whole vault in hand via hearth.ParseDir. This
+// proves the shared Vault (hearth.BuildGraph + hearth.Match under the
+// hood) actually resolves across notes now.
+func TestLoadVault_CrossNoteResolution(t *testing.T) {
+	dir := t.TempDir()
+	writeNote(t, dir, "a.md", "---\nstatus: open\n---\n\nSee [[Other Note]].\n")
+	writeNote(t, dir, "Other Note.md", "---\ntags: [reviewed]\n---\n\nLinks to [[Third]].\n")
+	writeNote(t, dir, "Third.md", "---\n---\n\nNo outgoing links.\n")
+
+	notes, err := LoadVault(dir)
+	if err != nil {
+		t.Fatalf("LoadVault: %v", err)
+	}
+	var a *EvalContext
+	for _, n := range notes {
+		if n.File.Name == "a.md" {
+			a = n
+		}
+	}
+	if a == nil {
+		t.Fatal("a.md not found")
+	}
+
+	// file("Other Note") resolves to the other note, and methods/fields
+	// on the result read ITS data, not a's.
+	resolved := mustEval(t, `file("Other Note")`, a)
+	fr, ok := resolved.(fileRef)
+	if !ok || fr.File.Name != "Other Note.md" {
+		t.Fatalf("file(\"Other Note\") = %#v", resolved)
+	}
+	if got := mustEval(t, `file("Other Note").hasTag("reviewed")`, a); got != true {
+		t.Errorf("file(\"Other Note\").hasTag(\"reviewed\") = %v", got)
+	}
+	if got := mustEval(t, `file("Other Note").name`, a); got != "Other Note.md" {
+		t.Errorf("file(\"Other Note\").name = %v", got)
+	}
+
+	// An unresolved path is nil, not an error (same as a missing property).
+	if got, err := EvalExpr(`file("Nonexistent")`, a); err != nil || got != nil {
+		t.Errorf("file(\"Nonexistent\") = %v, %v, want nil, nil", got, err)
+	}
+
+	// link(...).asFile() goes through the same resolver.
+	if got := mustEval(t, `link("Other Note").asFile().hasTag("reviewed")`, a); got != true {
+		t.Errorf("link(\"Other Note\").asFile().hasTag(\"reviewed\") = %v", got)
+	}
+
+	// link(...).linksTo(...) checks the LINK TARGET's own outgoing links,
+	// not a's — Other Note links to Third, but not back to a.
+	if got := mustEval(t, `link("Other Note").linksTo("Third")`, a); got != true {
+		t.Errorf("link(\"Other Note\").linksTo(\"Third\") = %v, want true", got)
+	}
+	if got := mustEval(t, `link("Other Note").linksTo("a")`, a); got != false {
+		t.Errorf("link(\"Other Note\").linksTo(\"a\") = %v, want false", got)
+	}
+}
+
 func TestQuery_GlobalAndViewFilters(t *testing.T) {
 	dir := t.TempDir()
 	writeNote(t, dir, "a.md", "---\nstatus: reviewed\nkind: book\n---\n\nbody\n")

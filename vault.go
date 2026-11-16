@@ -12,32 +12,77 @@ import (
 
 // LoadVault walks dir for markdown notes — via hearth's frontmatter
 // parsing and parallel directory scan — and adapts each into an
-// EvalContext. See landmarks/design/engineering/DEC-NqI23Hxjzx.
+// EvalContext, all sharing one Vault built from hearth's backlink graph
+// so file(), link.asFile(), and link.linksTo() can resolve against any
+// other note in the same load, not just "this" one. See
+// landmarks/design/engineering/DEC-NqI23Hxjzx.
 func LoadVault(dir string) ([]*EvalContext, error) {
 	notes, err := hearth.ParseDir([]string{dir})
 	if err != nil {
 		return nil, err
 	}
+
+	// path must agree with buildFileRef's rel path — it's the graph's key
+	// space, and Vault.Resolve/LinksTo callers (functions.go) only ever
+	// have rel paths (fileRef.Path, FileMeta.Path) to query it with.
+	path := func(n *hearth.Note) string { return relPath(n, dir) }
+	body := func(n *hearth.Note) string { return n.Body }
+	identity := func(n *hearth.Note) []string { return noteIdentity(n, dir) }
+
+	graph := hearth.BuildGraph(notes, path, body, identity)
+	vault := &Vault{
+		LinksTo: graph.LinksTo,
+		Resolve: func(query string) (fileRef, bool) {
+			matches := hearth.Match(notes, identity, query)
+			if len(matches) != 1 {
+				return fileRef{}, false
+			}
+			fr, err := buildFileRef(matches[0], dir)
+			if err != nil {
+				return fileRef{}, false
+			}
+			return fr, true
+		},
+	}
+
 	ctxs := make([]*EvalContext, len(notes))
 	for i, n := range notes {
-		ctx, err := noteToEvalContext(n, dir)
+		fr, err := buildFileRef(n, dir)
 		if err != nil {
 			return nil, err
 		}
-		ctxs[i] = ctx
+		ctxs[i] = &EvalContext{Note: fr.Note, File: fr.File, Vault: vault}
 	}
 	return ctxs, nil
 }
 
-func noteToEvalContext(n *hearth.Note, vaultDir string) (*EvalContext, error) {
-	info, err := os.Stat(n.Path)
-	if err != nil {
-		return nil, err
-	}
+// relPath is the vault-relative path a note is keyed by everywhere in
+// sill — hearth.BuildGraph's node keys, fileRef.Path, and FileMeta.Path
+// all have to agree, or Vault.LinksTo/Resolve silently never match.
+func relPath(n *hearth.Note, vaultDir string) string {
 	rel, err := filepath.Rel(vaultDir, n.Path)
 	if err != nil {
-		rel = n.Path
+		return n.Path
 	}
+	return rel
+}
+
+// noteIdentity is the string set a note can be addressed by: its
+// vault-relative path, its absolute path, and its bare filename — the
+// same identity hearth.BuildGraph uses to resolve [[wikilink]] targets,
+// so file("Some Note") and a [[Some Note]] wikilink resolve consistently
+// to the same note.
+func noteIdentity(n *hearth.Note, vaultDir string) []string {
+	basename := strings.TrimSuffix(filepath.Base(n.Path), filepath.Ext(n.Path))
+	return []string{relPath(n, vaultDir), n.Path, basename}
+}
+
+func buildFileRef(n *hearth.Note, vaultDir string) (fileRef, error) {
+	info, err := os.Stat(n.Path)
+	if err != nil {
+		return fileRef{}, err
+	}
+	rel := relPath(n, vaultDir)
 
 	base := filepath.Base(n.Path)
 	ext := strings.TrimPrefix(filepath.Ext(base), ".")
@@ -52,7 +97,8 @@ func noteToEvalContext(n *hearth.Note, vaultDir string) (*EvalContext, error) {
 		frontmatter = map[string]any{}
 	}
 
-	return &EvalContext{
+	return fileRef{
+		Path: rel,
 		Note: frontmatter,
 		File: FileMeta{
 			Name:     base,
@@ -66,7 +112,6 @@ func noteToEvalContext(n *hearth.Note, vaultDir string) (*EvalContext, error) {
 			Tags:     extractTags(frontmatter, n.Body),
 			Links:    linkTargets(n.Body),
 		},
-		Formulas: nil, // filled in by the caller once a Base is known (see Query/Lint)
 	}, nil
 }
 

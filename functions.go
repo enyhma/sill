@@ -15,12 +15,17 @@ import (
 // the evaluator, covering Obsidian's documented function reference
 // (https://obsidian.md/help/bases/functions).
 //
-// Not implemented, by design, pending vault-wide note resolution (see
-// link type doc comment in eval.go): the global file() function,
-// link.asFile(), and link.linksTo(). Also not implemented: the
-// Regular Expression type's .matches() — the docs document no way to
-// construct a regexp value from within an expression (no regexp()
-// global, no literal syntax), so there is nothing to call it on.
+// file(), link.asFile(), and link.linksTo() need vault-wide note
+// resolution — looking up some OTHER note's metadata or links — which is
+// exactly what ctx.Vault provides when an EvalContext comes from
+// LoadVault (see vault.go, DEC-NqI23Hxjzx). An EvalContext built
+// standalone (e.g. in a test) has a nil Vault, and these three report
+// that plainly rather than panicking.
+//
+// Not implemented: the Regular Expression type's .matches() — the docs
+// document no way to construct a regexp value from within an expression
+// (no regexp() global, no literal syntax), so there is nothing to call
+// it on.
 //
 // ponytail: list.filter/map/reduce take a per-element expression, which
 // needs a lambda-binding mechanism this evaluator doesn't have (what
@@ -29,7 +34,7 @@ import (
 // eval.go's *callExpr handling (like && / || already are) to evaluate
 // the argument Expr once per element against an extended EvalContext.
 
-func callGlobal(name string, args []any) (any, error) {
+func callGlobal(name string, args []any, ctx *EvalContext) (any, error) {
 	switch name {
 	case "if":
 		if len(args) < 2 {
@@ -126,7 +131,18 @@ func callGlobal(name string, args []any) (any, error) {
 		return rand.Float64(), nil
 
 	case "file":
-		return nil, fmt.Errorf("file(): not yet implemented — needs vault-wide note resolution")
+		p, err := stringArg(args, 0, "file")
+		if err != nil {
+			return nil, err
+		}
+		if ctx.Vault == nil {
+			return nil, fmt.Errorf("file(): no vault loaded — call via sill.Query/Lint, not a standalone EvalContext")
+		}
+		fr, ok := ctx.Vault.Resolve(p)
+		if !ok {
+			return nil, nil // unresolved path: nil, same as a missing property
+		}
+		return fr, nil
 
 	default:
 		return nil, fmt.Errorf("unknown function %q", name)
@@ -177,13 +193,42 @@ func callMethod(target any, name string, args []any, ctx *EvalContext) (any, err
 	case link:
 		switch name {
 		case "asFile":
-			return nil, fmt.Errorf("link.asFile(): not yet implemented — needs vault-wide note resolution")
+			if ctx.Vault == nil {
+				return nil, fmt.Errorf("link.asFile(): no vault loaded — call via sill.Query/Lint, not a standalone EvalContext")
+			}
+			fr, ok := ctx.Vault.Resolve(t.Path)
+			if !ok {
+				return nil, nil
+			}
+			return fr, nil
 		case "linksTo":
-			return nil, fmt.Errorf("link.linksTo(): not yet implemented — needs vault-wide note resolution")
+			if len(args) == 0 {
+				return nil, fmt.Errorf("linksTo: expected 1 argument")
+			}
+			if ctx.Vault == nil {
+				return nil, fmt.Errorf("link.linksTo(): no vault loaded — call via sill.Query/Lint, not a standalone EvalContext")
+			}
+			// t.Path and the argument are both unresolved queries (the
+			// raw string link() was given, or a bare property value) —
+			// the graph is keyed by resolved note path, so both ends
+			// need resolving through the same identity Resolve uses
+			// before LinksTo can match anything.
+			src, ok := ctx.Vault.Resolve(t.Path)
+			if !ok {
+				return false, nil
+			}
+			dst, ok := ctx.Vault.Resolve(linkTarget(args[0]))
+			if !ok {
+				return false, nil
+			}
+			return ctx.Vault.LinksTo(src.Path, dst.Path), nil
 		}
 
 	case fileRoot:
-		return fileMethod(ctx, name, args)
+		return fileMethod(ctx.Note, ctx.File, ctx.Vault, name, args)
+
+	case fileRef:
+		return fileMethod(t.Note, t.File, ctx.Vault, name, args)
 
 	case noteRoot:
 		return nil, fmt.Errorf("note has no method %q", name)
@@ -560,10 +605,15 @@ func objectMethod(o map[string]any, name string, args []any) (any, error) {
 
 // ── File ─────────────────────────────────────────────────────────────────
 
-func fileMethod(ctx *EvalContext, name string, args []any) (any, error) {
+// fileMethod implements file.* methods against note/file — the current
+// note's own data for fileRoot, or an arbitrary resolved note's data for
+// fileRef (see callMethod). vault is only needed by methods that resolve
+// other notes in turn; none of these do today, but it's threaded through
+// for symmetry with link's asFile/linksTo.
+func fileMethod(note map[string]any, file FileMeta, vault *Vault, name string, args []any) (any, error) {
 	switch name {
 	case "asLink":
-		display := ctx.File.Name
+		display := file.Name
 		if len(args) > 0 {
 			d, err := stringArg(args, 0, "asLink")
 			if err != nil {
@@ -571,13 +621,13 @@ func fileMethod(ctx *EvalContext, name string, args []any) (any, error) {
 			}
 			display = d
 		}
-		return link{Path: ctx.File.Path, Display: display}, nil
+		return link{Path: file.Path, Display: display}, nil
 	case "hasLink":
 		if len(args) == 0 {
 			return nil, fmt.Errorf("hasLink: expected 1 argument")
 		}
 		target := linkTarget(args[0])
-		for _, l := range ctx.File.Links {
+		for _, l := range file.Links {
 			if l == target {
 				return true, nil
 			}
@@ -588,7 +638,7 @@ func fileMethod(ctx *EvalContext, name string, args []any) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		_, ok := ctx.Note[prop]
+		_, ok := note[prop]
 		return ok, nil
 	case "hasTag":
 		for i := range args {
@@ -596,7 +646,7 @@ func fileMethod(ctx *EvalContext, name string, args []any) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			for _, tag := range ctx.File.Tags {
+			for _, tag := range file.Tags {
 				if tag == want {
 					return true, nil
 				}
@@ -609,16 +659,20 @@ func fileMethod(ctx *EvalContext, name string, args []any) (any, error) {
 			return nil, err
 		}
 		folder = strings.TrimSuffix(folder, "/")
-		return ctx.File.Folder == folder || strings.HasPrefix(ctx.File.Folder, folder+"/"), nil
+		return file.Folder == folder || strings.HasPrefix(file.Folder, folder+"/"), nil
 	}
 	return nil, fmt.Errorf("file has no method %q", name)
 }
 
 func linkTarget(v any) string {
-	if l, ok := v.(link); ok {
-		return l.Path
+	switch t := v.(type) {
+	case link:
+		return t.Path
+	case fileRef:
+		return t.Path
+	default:
+		return toDisplayString(v)
 	}
-	return toDisplayString(v)
 }
 
 // ── Argument helpers ─────────────────────────────────────────────────────

@@ -18,14 +18,33 @@ type FileMeta struct {
 }
 
 // EvalContext is what a filter/formula expression evaluates against: one
-// note's frontmatter properties, its file metadata, and the base's own
-// formula definitions (resolved lazily and cached on first reference).
+// note's frontmatter properties, its file metadata, the base's own
+// formula definitions (resolved lazily and cached on first reference),
+// and — when evaluating as part of a loaded vault — a Vault for
+// resolving references to OTHER notes (file(), link.asFile(),
+// link.linksTo()). Vault is nil when an EvalContext is built standalone
+// (e.g. in tests); those three functions then report that there's no
+// vault to resolve against, same shape as any other input error.
 type EvalContext struct {
 	Note     map[string]any
 	File     FileMeta
 	Formulas map[string]string
+	Vault    *Vault
 
 	formulaCache map[string]any
+}
+
+// Vault is the cross-note capability a loaded set of notes provides.
+// Kept as plain funcs (not a hearth type) so eval.go/functions.go have no
+// hearth dependency — vault.go is the one file that builds a real Vault,
+// backed by hearth.BuildGraph and hearth.Match (see DEC-NqI23Hxjzx).
+type Vault struct {
+	// LinksTo reports whether the note at path a's wikilinks resolve to
+	// path b — backed by hearth's backlink graph.
+	LinksTo func(a, b string) bool
+	// Resolve looks up a note by path, name, or wikilink-style query,
+	// returning (zero, false) when it doesn't resolve to exactly one note.
+	Resolve func(query string) (fileRef, bool)
 }
 
 // root markers: evaluating the bare identifiers "note"/"file"/"formula"
@@ -34,12 +53,22 @@ type noteRoot struct{}
 type fileRoot struct{}
 type formulaRoot struct{}
 
+// fileRef is a resolved reference to a specific note in the vault — what
+// the global file() function and link.asFile() return. Unlike fileRoot
+// (the current note's implicit "file" root, read through ctx.Note/
+// ctx.File), it carries its own note properties and file metadata so
+// methods and fields work on it directly, independent of "the current
+// note".
+type fileRef struct {
+	Path string
+	Note map[string]any
+	File FileMeta
+}
+
 // link is the value produced by the global link() function and by
-// file.asLink() — a lightweight path+display wrapper. Resolving it back
-// to a File (link.asFile()) or querying its target note's own links
-// (link.linksTo()) needs vault-wide note lookup, which EvalContext does
-// not provide yet; those two methods are stubbed in functions.go until a
-// capability for cross-note resolution exists.
+// file.asLink() — a lightweight path+display wrapper. Resolving it (via
+// Vault.Resolve) or querying what it links to (via Vault.LinksTo) needs
+// a loaded vault; without one, both report that plainly.
 type link struct {
 	Path    string
 	Display string
@@ -169,7 +198,7 @@ func eval(e Expr, ctx *EvalContext) (any, error) {
 			args[i] = v
 		}
 		if n.Target == nil {
-			return callGlobal(n.Name, args)
+			return callGlobal(n.Name, args, ctx)
 		}
 		t, err := eval(n.Target, ctx)
 		if err != nil {
@@ -233,7 +262,15 @@ func evalMember(target any, name string, ctx *EvalContext) (any, error) {
 	case noteRoot:
 		return ctx.Note[name], nil
 	case fileRoot:
+		if name == "properties" {
+			return ctx.Note, nil
+		}
 		return evalFileField(ctx.File, name)
+	case fileRef:
+		if name == "properties" {
+			return t.Note, nil
+		}
+		return evalFileField(t.File, name)
 	case formulaRoot:
 		return ctx.evalFormula(name)
 	case map[string]any:
@@ -493,7 +530,7 @@ func typeName(v any) string {
 		return "link"
 	case noteRoot:
 		return "note"
-	case fileRoot:
+	case fileRoot, fileRef:
 		return "file"
 	case formulaRoot:
 		return "formula"

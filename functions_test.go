@@ -170,18 +170,32 @@ func TestFunctions_GlobalMisc(t *testing.T) {
 	}
 }
 
-func TestFunctions_NotYetImplementedStubsError(t *testing.T) {
+func TestFunctions_LambdaMethodsNotYetImplemented(t *testing.T) {
 	ctx := &EvalContext{Note: map[string]any{"l": []any{1.0, 2.0}}}
 	for _, expr := range []string{
-		`file("other.md")`,
-		`link("x").asFile()`,
-		`link("x").linksTo("y")`,
 		`l.filter(true)`,
 		`l.map(1)`,
 		`l.reduce(1, 0)`,
 	} {
 		if _, err := EvalExpr(expr, ctx); err == nil {
 			t.Errorf("%s: expected a not-yet-implemented error, got nil", expr)
+		}
+	}
+}
+
+// file(), link.asFile(), and link.linksTo() need a loaded Vault (see
+// vault_test.go for the real end-to-end resolution); called on a
+// standalone EvalContext (Vault == nil, as in every other test in this
+// file) they report that plainly rather than panicking.
+func TestFunctions_VaultDependentMethodsWithoutAVault(t *testing.T) {
+	ctx := &EvalContext{Note: map[string]any{}}
+	for _, expr := range []string{
+		`file("other.md")`,
+		`link("x").asFile()`,
+		`link("x").linksTo("y")`,
+	} {
+		if _, err := EvalExpr(expr, ctx); err == nil {
+			t.Errorf("%s: expected a no-vault-loaded error, got nil", expr)
 		}
 	}
 }
