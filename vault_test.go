@@ -21,9 +21,9 @@ func TestLoadVault(t *testing.T) {
 	writeNote(t, dir, "reviewed.md", "---\nstatus: reviewed\ntags: [book, fiction]\n---\n\nSee [[Other Note]] and #urgent.\n")
 	writeNote(t, dir, "sub/open.md", "---\nstatus: open\n---\n\nNothing here.\n")
 
-	notes, err := LoadVault(dir)
-	if err != nil {
-		t.Fatalf("LoadVault: %v", err)
+	notes, errs := LoadVault(dir)
+	if len(errs) > 0 {
+		t.Fatalf("LoadVault: %v", errs)
 	}
 	if len(notes) != 2 {
 		t.Fatalf("got %d notes, want 2", len(notes))
@@ -71,9 +71,9 @@ func TestLoadVault_SkipsCodeFenceTag(t *testing.T) {
 	dir := t.TempDir()
 	writeNote(t, dir, "n.md", "---\nstatus: open\n---\n\n```\n#notareal tag\n```\n#real\n")
 
-	notes, err := LoadVault(dir)
-	if err != nil {
-		t.Fatalf("LoadVault: %v", err)
+	notes, errs := LoadVault(dir)
+	if len(errs) > 0 {
+		t.Fatalf("LoadVault: %v", errs)
 	}
 	if len(notes[0].File.Tags) != 1 || notes[0].File.Tags[0] != "real" {
 		t.Errorf("Tags = %v, want [real]", notes[0].File.Tags)
@@ -92,9 +92,9 @@ func TestLoadVault_CrossNoteResolution(t *testing.T) {
 	writeNote(t, dir, "Other Note.md", "---\ntags: [reviewed]\n---\n\nLinks to [[Third]].\n")
 	writeNote(t, dir, "Third.md", "---\n---\n\nNo outgoing links.\n")
 
-	notes, err := LoadVault(dir)
-	if err != nil {
-		t.Fatalf("LoadVault: %v", err)
+	notes, errs := LoadVault(dir)
+	if len(errs) > 0 {
+		t.Fatalf("LoadVault: %v", errs)
 	}
 	var a *EvalContext
 	for _, n := range notes {
@@ -140,6 +140,24 @@ func TestLoadVault_CrossNoteResolution(t *testing.T) {
 	}
 }
 
+// TestLoadVault_ToleratesBadNote mirrors the real-world case that drove
+// hearth's DEC-LSh8yPXvpn: an Obsidian template file with Templater
+// placeholder syntax isn't valid YAML. LoadVault must skip it and still
+// return every other note, not fail the whole load.
+func TestLoadVault_ToleratesBadNote(t *testing.T) {
+	dir := t.TempDir()
+	writeNote(t, dir, "good.md", "---\nstatus: open\n---\n\nbody\n")
+	writeNote(t, dir, "template.md", "---\ncreated: {{date}}\n---\n\nbody\n")
+
+	notes, errs := LoadVault(dir)
+	if len(errs) != 1 {
+		t.Fatalf("got %d errors, want 1: %v", len(errs), errs)
+	}
+	if len(notes) != 1 || notes[0].File.Name != "good.md" {
+		t.Fatalf("notes = %+v, want just good.md", notes)
+	}
+}
+
 func TestQuery_GlobalAndViewFilters(t *testing.T) {
 	dir := t.TempDir()
 	writeNote(t, dir, "a.md", "---\nstatus: reviewed\nkind: book\n---\n\nbody\n")
@@ -153,15 +171,18 @@ func TestQuery_GlobalAndViewFilters(t *testing.T) {
 		},
 	}
 
-	results, err := Query(base, dir, "books")
+	results, warnings, err := Query(base, dir, "books")
 	if err != nil {
 		t.Fatalf("Query: %v", err)
+	}
+	if len(warnings) > 0 {
+		t.Fatalf("Query warnings: %v", warnings)
 	}
 	if len(results) != 1 || results[0].File.Name != "a.md" {
 		t.Errorf("Query results = %+v, want just a.md", results)
 	}
 
-	all, err := Query(base, dir, "")
+	all, _, err := Query(base, dir, "")
 	if err != nil {
 		t.Fatalf("Query (default view): %v", err)
 	}
@@ -169,7 +190,7 @@ func TestQuery_GlobalAndViewFilters(t *testing.T) {
 		t.Errorf("Query with default (first) view = %d results, want 1", len(all))
 	}
 
-	if _, err := Query(base, dir, "nonexistent"); err == nil {
+	if _, _, err := Query(base, dir, "nonexistent"); err == nil {
 		t.Error("expected an error for an unknown view name")
 	}
 }
@@ -191,9 +212,12 @@ sillAssert:
 		t.Fatalf("Parse: %v", err)
 	}
 
-	res, err := Lint(base, dir)
+	res, warnings, err := Lint(base, dir)
 	if err != nil {
 		t.Fatalf("Lint: %v", err)
+	}
+	if len(warnings) > 0 {
+		t.Fatalf("Lint warnings: %v", warnings)
 	}
 	if res.PopulationCount != 2 || res.SatisfiedCount != 2 || !res.Passed {
 		t.Errorf("res = %+v", res)
@@ -203,7 +227,7 @@ sillAssert:
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if _, err := Lint(plain, dir); err == nil {
+	if _, _, err := Lint(plain, dir); err == nil {
 		t.Error("expected an error linting a base with no sillAssert extension")
 	}
 }

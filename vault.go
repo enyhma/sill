@@ -16,11 +16,13 @@ import (
 // so file(), link.asFile(), and link.linksTo() can resolve against any
 // other note in the same load, not just "this" one. See
 // landmarks/design/engineering/DEC-NqI23Hxjzx.
-func LoadVault(dir string) ([]*EvalContext, error) {
-	notes, err := hearth.ParseDir([]string{dir})
-	if err != nil {
-		return nil, err
-	}
+//
+// A note that fails to parse (e.g. an Obsidian template file with
+// Templater/Dataview placeholder syntax that isn't valid YAML) is
+// skipped and its error returned alongside the rest, not fatal to the
+// whole load — see hearth's DEC-LSh8yPXvpn, which this inherits.
+func LoadVault(dir string) ([]*EvalContext, []error) {
+	notes, errs := hearth.ParseDir([]string{dir})
 
 	// path must agree with buildFileRef's rel path — it's the graph's key
 	// space, and Vault.Resolve/LinksTo callers (functions.go) only ever
@@ -45,15 +47,16 @@ func LoadVault(dir string) ([]*EvalContext, error) {
 		},
 	}
 
-	ctxs := make([]*EvalContext, len(notes))
-	for i, n := range notes {
+	var ctxs []*EvalContext
+	for _, n := range notes {
 		fr, err := buildFileRef(n, dir)
 		if err != nil {
-			return nil, err
+			errs = append(errs, err)
+			continue
 		}
-		ctxs[i] = &EvalContext{Note: fr.Note, File: fr.File, Vault: vault}
+		ctxs = append(ctxs, &EvalContext{Note: fr.Note, File: fr.File, Vault: vault})
 	}
-	return ctxs, nil
+	return ctxs, errs
 }
 
 // relPath is the vault-relative path a note is keyed by everywhere in
@@ -174,25 +177,28 @@ func extractTags(note map[string]any, body string) []string {
 // per the Bases spec) against every note under vaultDir. An empty
 // viewName selects the first view if the base has one; a base with no
 // views and no viewName just applies the global filters.
-func Query(base *Base, vaultDir, viewName string) ([]*EvalContext, error) {
-	notes, err := LoadVault(vaultDir)
-	if err != nil {
-		return nil, err
-	}
+//
+// The returned []error are non-fatal per-note load warnings (see
+// LoadVault) — notes that failed to parse are simply absent from the
+// results, not a reason to fail the whole query. The final error return
+// is reserved for a genuinely fatal problem (an unknown --view name, or
+// a filter/formula evaluation error).
+func Query(base *Base, vaultDir, viewName string) ([]*EvalContext, []error, error) {
+	notes, warnings := LoadVault(vaultDir)
 	for _, ctx := range notes {
 		ctx.Formulas = base.Formulas
 	}
 
 	view, err := selectView(base, viewName)
 	if err != nil {
-		return nil, err
+		return nil, warnings, err
 	}
 
 	var out []*EvalContext
 	for _, ctx := range notes {
 		ok, err := EvalFilter(base.Filters, ctx)
 		if err != nil {
-			return nil, err
+			return nil, warnings, err
 		}
 		if !ok {
 			continue
@@ -200,7 +206,7 @@ func Query(base *Base, vaultDir, viewName string) ([]*EvalContext, error) {
 		if view != nil {
 			ok, err = EvalFilter(view.Filters, ctx)
 			if err != nil {
-				return nil, err
+				return nil, warnings, err
 			}
 			if !ok {
 				continue
@@ -208,7 +214,7 @@ func Query(base *Base, vaultDir, viewName string) ([]*EvalContext, error) {
 		}
 		out = append(out, ctx)
 	}
-	return out, nil
+	return out, warnings, nil
 }
 
 func selectView(base *Base, viewName string) (*View, error) {
@@ -227,21 +233,21 @@ func selectView(base *Base, viewName string) (*View, error) {
 }
 
 // Lint evaluates base's sillAssert sidecar against every note under
-// vaultDir. Returns an error if base has no sillAssert extension.
-func Lint(base *Base, vaultDir string) (*AssertionResult, error) {
+// vaultDir. Returns an error if base has no sillAssert extension. The
+// returned []error are non-fatal per-note load warnings, same contract
+// as Query.
+func Lint(base *Base, vaultDir string) (*AssertionResult, []error, error) {
 	a, err := ParseAssertion(base)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if a == nil {
-		return nil, fmt.Errorf("base has no %s extension to lint", sillAssertKey)
+		return nil, nil, fmt.Errorf("base has no %s extension to lint", sillAssertKey)
 	}
-	notes, err := LoadVault(vaultDir)
-	if err != nil {
-		return nil, err
-	}
+	notes, warnings := LoadVault(vaultDir)
 	for _, ctx := range notes {
 		ctx.Formulas = base.Formulas
 	}
-	return EvalAssertion(a, notes)
+	res, err := EvalAssertion(a, notes)
+	return res, warnings, err
 }

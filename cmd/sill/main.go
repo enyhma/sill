@@ -35,10 +35,11 @@ func newQueryCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			results, err := sill.Query(base, vaultOrDefault(vault, args[0]), view)
+			results, warnings, err := sill.Query(base, vaultOrDefault(vault, args[0]), view)
 			if err != nil {
 				return err
 			}
+			printWarnings(warnings)
 			out, err := sill.FormatQueryResults(results, format)
 			if err != nil {
 				return err
@@ -64,10 +65,11 @@ func newLintCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res, err := sill.Lint(base, vaultOrDefault(vault, args[0]))
+			res, warnings, err := sill.Lint(base, vaultOrDefault(vault, args[0]))
 			if err != nil {
 				return err
 			}
+			printWarnings(warnings)
 			fmt.Printf("%d/%d matched (%.1f%%) — %s\n",
 				res.SatisfiedCount, res.PopulationCount, res.Percentage*100, passLabel(res.Passed))
 			os.Exit(res.ExitCode())
@@ -83,6 +85,15 @@ func vaultOrDefault(vault, basePath string) string {
 		return vault
 	}
 	return filepath.Dir(basePath)
+}
+
+// printWarnings reports non-fatal per-note load problems (e.g. an
+// Obsidian template file with placeholder syntax that isn't valid YAML)
+// without failing the command — see LoadVault.
+func printWarnings(warnings []error) {
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, "sill: warning:", w)
+	}
 }
 
 func passLabel(passed bool) string {
