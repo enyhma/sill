@@ -1,8 +1,11 @@
 package sill
 
 import (
+	"encoding/csv"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -310,28 +313,157 @@ sillAssert:
 	}
 }
 
-func TestFormatQueryResults(t *testing.T) {
-	notes := []*EvalContext{
-		{File: FileMeta{Path: "a.md"}},
-		{File: FileMeta{Path: "b.md"}},
+func booksFixture() []*EvalContext {
+	return []*EvalContext{
+		{
+			File: FileMeta{Path: "Snow Crash.md"},
+			Note: map[string]any{
+				"status": "read",
+				"author": "Neal Stephenson",
+				"year":   1992.0,
+				"genre":  []any{"sci-fi", "cyberpunk"},
+			},
+		},
+		{
+			File: FileMeta{Path: "Sapiens.md"},
+			Note: map[string]any{
+				"status": "reading",
+				"author": "Yuval Noah Harari",
+				"year":   2011.0,
+				"genre":  []any{"nonfiction", "history"},
+			},
+		},
 	}
+}
 
-	table, err := FormatQueryResults(notes, "table")
-	if err != nil || table != "a.md\nb.md" {
-		t.Errorf("table = %q, %v", table, err)
+func TestFormatQueryResults_Table_NestsViaIndentation(t *testing.T) {
+	out, err := FormatQueryResults(booksFixture(), RenderConfig{Format: "table"})
+	if err != nil {
+		t.Fatalf("FormatQueryResults: %v", err)
 	}
-
-	csv, err := FormatQueryResults(notes, "csv")
-	if err != nil || csv != "a.md\nb.md\n" {
-		t.Errorf("csv = %q, %v", csv, err)
+	want := "Snow Crash.md\n" +
+		"  author: Neal Stephenson\n" +
+		"  genre:\n" +
+		"    - sci-fi\n" +
+		"    - cyberpunk\n" +
+		"  status: read\n" +
+		"  year:   1992\n" +
+		"\n" +
+		"Sapiens.md\n" +
+		"  author: Yuval Noah Harari\n" +
+		"  genre:\n" +
+		"    - nonfiction\n" +
+		"    - history\n" +
+		"  status: reading\n" +
+		"  year:   2011\n"
+	if out != want {
+		t.Errorf("table output =\n%q\nwant\n%q", out, want)
 	}
+}
 
-	jsonOut, err := FormatQueryResults(notes, "json")
-	if err != nil || jsonOut != "[\n  \"a.md\",\n  \"b.md\"\n]" {
-		t.Errorf("json = %q, %v", jsonOut, err)
+func TestFormatQueryResults_Grid_FlattensNestingInline(t *testing.T) {
+	out, err := FormatQueryResults(booksFixture(), RenderConfig{
+		Format:  "grid",
+		Columns: []string{"status", "author", "genre"},
+	})
+	if err != nil {
+		t.Fatalf("FormatQueryResults: %v", err)
 	}
+	if !strings.Contains(out, "[sci-fi, cyberpunk]") {
+		t.Errorf("expected genre flattened inline, got:\n%s", out)
+	}
+	if strings.Contains(out, "\n    - ") {
+		t.Errorf("grid must not indent nested values like table does, got:\n%s", out)
+	}
+}
 
-	if _, err := FormatQueryResults(notes, "bogus"); err == nil {
+// TestFormatQueryResults_Grid_ResolvesFileColumns reproduces a real bug
+// found running kepano-obsidian's actual Evergreen.base: its view's
+// order: names file.name and created — file.name is a file.* reference,
+// not a bare frontmatter property, so a raw map lookup on Note silently
+// returned nothing for it. Columns now go through the real evaluator.
+func TestFormatQueryResults_Grid_ResolvesFileColumns(t *testing.T) {
+	notes := []*EvalContext{{
+		File: FileMeta{Path: "sub/Evergreen notes.md", Name: "Evergreen notes.md"},
+		Note: map[string]any{"created": "2023-09-14"},
+	}}
+	out, err := FormatQueryResults(notes, RenderConfig{
+		Format:  "grid",
+		Columns: []string{"file.name", "created"},
+	})
+	if err != nil {
+		t.Fatalf("FormatQueryResults: %v", err)
+	}
+	if !strings.Contains(out, "Evergreen notes.md") {
+		t.Errorf("expected file.name to resolve to the note's filename, got:\n%s", out)
+	}
+}
+
+func TestFormatQueryResults_JSON_NestsNatively(t *testing.T) {
+	out, err := FormatQueryResults(booksFixture(), RenderConfig{Format: "json"})
+	if err != nil {
+		t.Fatalf("FormatQueryResults: %v", err)
+	}
+	var parsed []map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("output isn't valid JSON: %v\n%s", err, out)
+	}
+	genre, ok := parsed[0]["genre"].([]any)
+	if !ok || len(genre) != 2 || genre[0] != "sci-fi" {
+		t.Errorf("genre = %#v, want a real [sci-fi cyberpunk] array", parsed[0]["genre"])
+	}
+}
+
+func TestFormatQueryResults_TOON_FlattensAndEscapesCommas(t *testing.T) {
+	out, err := FormatQueryResults(booksFixture(), RenderConfig{
+		Format:  "toon",
+		Columns: []string{"status", "genre"},
+	})
+	if err != nil {
+		t.Fatalf("FormatQueryResults: %v", err)
+	}
+	if !strings.HasPrefix(out, "notes[2]{path,status,genre}:\n") {
+		t.Errorf("unexpected TOON header, got:\n%s", out)
+	}
+	// genre's own flattened "," forces CSV-style quoting of the whole cell.
+	if !strings.Contains(out, `"[sci-fi, cyberpunk]"`) {
+		t.Errorf("expected the comma-containing cell to be quoted, got:\n%s", out)
+	}
+}
+
+func TestFormatQueryResults_CSV_Parses(t *testing.T) {
+	out, err := FormatQueryResults(booksFixture(), RenderConfig{
+		Format:  "csv",
+		Columns: []string{"status", "author"},
+	})
+	if err != nil {
+		t.Fatalf("FormatQueryResults: %v", err)
+	}
+	records, err := csv.NewReader(strings.NewReader(out)).ReadAll()
+	if err != nil {
+		t.Fatalf("output isn't valid CSV: %v\n%s", err, out)
+	}
+	if len(records) != 3 { // header + 2 notes
+		t.Fatalf("got %d records, want 3: %v", len(records), records)
+	}
+	if records[0][0] != "path" || records[1][0] != "Snow Crash.md" {
+		t.Errorf("records = %v", records)
+	}
+}
+
+func TestFormatQueryResults_ColumnsDefaultToEveryKeySorted(t *testing.T) {
+	out, err := FormatQueryResults(booksFixture(), RenderConfig{Format: "grid"})
+	if err != nil {
+		t.Fatalf("FormatQueryResults: %v", err)
+	}
+	header := strings.SplitN(out, "\n", 2)[0]
+	if header != "path           author             genre                  status   year" {
+		t.Errorf("header = %q", header)
+	}
+}
+
+func TestFormatQueryResults_UnknownFormat(t *testing.T) {
+	if _, err := FormatQueryResults(booksFixture(), RenderConfig{Format: "bogus"}); err == nil {
 		t.Error("expected an error for an unknown format")
 	}
 }

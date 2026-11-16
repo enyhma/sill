@@ -19,7 +19,11 @@ for vault in "$vaults_dir"/*/; do
   name="$(basename "$vault")"
   total="$(find "$vault" -name '*.md' | wc -l | tr -d ' ')"
 
-  matched="$("$sill_bin" query "$smoke_base" --vault "$vault" --format json 2>/dev/null | grep -c '"' || true)"
+  # grid is one header line, one separator line, then exactly one line per
+  # matched note — counting data lines is robust regardless of what a
+  # vault's own property values contain (json's line/quote count isn't:
+  # it's one nested object per note, with as many quotes as properties).
+  matched="$("$sill_bin" query "$smoke_base" --vault "$vault" --format grid 2>/dev/null | tail -n +3 | grep -c . || true)"
   echo "== $name: $matched/$total notes loaded via a trivial query =="
   if [ "$total" -gt 0 ] && [ "$matched" -eq 0 ]; then
     echo "FAIL: $name loaded zero notes out of $total"

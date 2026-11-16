@@ -221,7 +221,7 @@ func Query(base *Base, vaultDir, viewName string) ([]*EvalContext, []error, erro
 		ctx.Formulas = base.Formulas
 	}
 
-	view, err := selectView(base, viewName)
+	view, err := ResolveView(base, viewName)
 	if err != nil {
 		return nil, warnings, err
 	}
@@ -251,7 +251,11 @@ func Query(base *Base, vaultDir, viewName string) ([]*EvalContext, []error, erro
 	return out, warnings, nil
 }
 
-func selectView(base *Base, viewName string) (*View, error) {
+// ResolveView selects base's view by name, or its first view when
+// viewName is empty, or (nil, nil) when the base has no views at all.
+// Exported so callers (the CLI) can read the resolved view's Order for
+// the compact render formats' default column set.
+func ResolveView(base *Base, viewName string) (*View, error) {
 	if viewName != "" {
 		for i := range base.Views {
 			if base.Views[i].Name == viewName {

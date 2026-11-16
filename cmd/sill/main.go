@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/enyhma/hearth"
 	"github.com/enyhma/sill"
 	"github.com/spf13/cobra"
 )
@@ -25,7 +27,8 @@ func main() {
 }
 
 func newQueryCmd() *cobra.Command {
-	var vault, view, format string
+	var vault, view, format, fields string
+	var color, noColor bool
 	cmd := &cobra.Command{
 		Use:   "query <file.base>",
 		Short: "Run a view's filters against a vault and print matching notes",
@@ -40,7 +43,17 @@ func newQueryCmd() *cobra.Command {
 				return err
 			}
 			printWarnings(warnings)
-			out, err := sill.FormatQueryResults(results, format)
+
+			columns, err := resolveColumns(base, view, fields)
+			if err != nil {
+				return err
+			}
+			cfg := sill.RenderConfig{
+				Format:  format,
+				Color:   hearth.ShouldColor(hearth.ColorConfig{IsTTY: isStdoutTTY(), ForceColor: color, NoColor: noColor}),
+				Columns: columns,
+			}
+			out, err := sill.FormatQueryResults(results, cfg)
 			if err != nil {
 				return err
 			}
@@ -50,8 +63,33 @@ func newQueryCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&vault, "vault", "", "vault directory to evaluate against (default: the .base file's directory)")
 	cmd.Flags().StringVar(&view, "view", "", "view to run (default: the base's first view, if any)")
-	cmd.Flags().StringVar(&format, "format", "table", "output format: json, csv, or table")
+	cmd.Flags().StringVar(&format, "format", "table", "output format: table, grid, json, toon, or csv")
+	cmd.Flags().StringVar(&fields, "fields", "", "comma-separated columns for grid/toon/csv (default: the view's own order:, or every property seen)")
+	cmd.Flags().BoolVar(&color, "color", false, "force ANSI color on, even when not a terminal")
+	cmd.Flags().BoolVar(&noColor, "no-color", false, "force ANSI color off, even on a terminal")
 	return cmd
+}
+
+// resolveColumns picks the column set for grid/toon/csv: an explicit
+// --fields override first, then the resolved view's own Order (what a
+// real .base file's view already names), otherwise none — which
+// FormatQueryResults then fills with every property seen, sorted.
+func resolveColumns(base *sill.Base, viewName, fields string) ([]string, error) {
+	if fields != "" {
+		parts := strings.Split(fields, ",")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		return parts, nil
+	}
+	view, err := sill.ResolveView(base, viewName)
+	if err != nil {
+		return nil, err
+	}
+	if view == nil {
+		return nil, nil
+	}
+	return view.Order, nil
 }
 
 func newLintCmd() *cobra.Command {
@@ -85,6 +123,17 @@ func vaultOrDefault(vault, basePath string) string {
 		return vault
 	}
 	return filepath.Dir(basePath)
+}
+
+// isStdoutTTY reports whether stdout is an interactive terminal rather
+// than a pipe/redirect — no extra dependency needed, just the character-
+// device bit on stdout's file mode.
+func isStdoutTTY() bool {
+	info, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }
 
 // printWarnings reports non-fatal per-note load problems (e.g. an
