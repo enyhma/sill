@@ -1,7 +1,6 @@
 package sill
 
 import (
-	"encoding/csv"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -428,26 +427,6 @@ func TestFormatQueryResults_TOON_FlattensAndEscapesCommas(t *testing.T) {
 	// genre's own flattened "," forces CSV-style quoting of the whole cell.
 	if !strings.Contains(out, `"[sci-fi, cyberpunk]"`) {
 		t.Errorf("expected the comma-containing cell to be quoted, got:\n%s", out)
-	}
-}
-
-func TestFormatQueryResults_CSV_Parses(t *testing.T) {
-	out, err := FormatQueryResults(booksFixture(), RenderConfig{
-		Format:  "csv",
-		Columns: []string{"status", "author"},
-	})
-	if err != nil {
-		t.Fatalf("FormatQueryResults: %v", err)
-	}
-	records, err := csv.NewReader(strings.NewReader(out)).ReadAll()
-	if err != nil {
-		t.Fatalf("output isn't valid CSV: %v\n%s", err, out)
-	}
-	if len(records) != 3 { // header + 2 notes
-		t.Fatalf("got %d records, want 3: %v", len(records), records)
-	}
-	if records[0][0] != "path" || records[1][0] != "Snow Crash.md" {
-		t.Errorf("records = %v", records)
 	}
 }
 

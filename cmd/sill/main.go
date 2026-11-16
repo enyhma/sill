@@ -63,14 +63,14 @@ func newQueryCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&vault, "vault", "", "vault directory to evaluate against (default: the .base file's directory)")
 	cmd.Flags().StringVar(&view, "view", "", "view to run (default: the base's first view, if any)")
-	cmd.Flags().StringVar(&format, "format", "table", "output format: table, grid, json, toon, or csv")
-	cmd.Flags().StringVar(&fields, "fields", "", "comma-separated columns for grid/toon/csv (default: the view's own order:, or every property seen)")
+	cmd.Flags().StringVar(&format, "format", "table", "output format: table, grid, json, or toon")
+	cmd.Flags().StringVar(&fields, "fields", "", "comma-separated columns for grid/toon (default: the view's own order:, or every property seen)")
 	cmd.Flags().BoolVar(&color, "color", false, "force ANSI color on, even when not a terminal")
 	cmd.Flags().BoolVar(&noColor, "no-color", false, "force ANSI color off, even on a terminal")
 	return cmd
 }
 
-// resolveColumns picks the column set for grid/toon/csv: an explicit
+// resolveColumns picks the column set for grid/toon: an explicit
 // --fields override first, then the resolved view's own Order (what a
 // real .base file's view already names), otherwise none — which
 // FormatQueryResults then fills with every property seen, sorted.

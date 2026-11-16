@@ -1,8 +1,6 @@
 package sill
 
 import (
-	"bytes"
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -12,18 +10,18 @@ import (
 
 // RenderConfig controls how FormatQueryResults presents a Query result.
 //
-// Format is one of "table" (default), "grid", "json", "toon", or "csv".
-// Table is the full-detail option: one block per note, every property,
-// nested values shown through indentation (hearth.RenderBlock) — for a
-// person reading a terminal. Grid/toon/csv are the compact-overview
-// options: a fixed column set, nested values flattened inline
-// (hearth.FormatInline) rather than indented, since none of those three
-// can recurse within a cell. JSON always includes every property on
-// every note (Columns doesn't apply to it) since nesting there is free.
+// Format is one of "table" (default), "grid", "json", or "toon". Table
+// is the full-detail option: one block per note, every property, nested
+// values shown through indentation (hearth.RenderBlock) — for a person
+// reading a terminal. Grid/toon are the compact-overview options: a
+// fixed column set, nested values flattened inline (hearth.FormatInline)
+// rather than indented, since neither can recurse within a cell. JSON
+// always includes every property on every note (Columns doesn't apply
+// to it) since nesting there is free.
 //
-// Columns selects which properties grid/toon/csv show, in order —
-// typically a view's Order. Empty means "every property seen across the
-// result set, sorted" (table's default scope, just column-shaped).
+// Columns selects which properties grid/toon show, in order — typically
+// a view's Order. Empty means "every property seen across the result
+// set, sorted" (table's default scope, just column-shaped).
 type RenderConfig struct {
 	Format  string
 	Color   bool
@@ -41,10 +39,8 @@ func FormatQueryResults(notes []*EvalContext, cfg RenderConfig) (string, error) 
 		return renderJSON(notes)
 	case "toon":
 		return renderToon(notes, cfg.Columns), nil
-	case "csv":
-		return renderCSV(notes, cfg.Columns)
 	default:
-		return "", fmt.Errorf("unknown format %q (expected table, grid, json, toon, or csv)", cfg.Format)
+		return "", fmt.Errorf("unknown format %q (expected table, grid, json, or toon)", cfg.Format)
 	}
 }
 
@@ -75,25 +71,6 @@ func renderToon(notes []*EvalContext, columns []string) string {
 	return hearth.RenderTOON("notes", fields, rows)
 }
 
-func renderCSV(notes []*EvalContext, columns []string) (string, error) {
-	cols := columnsOrAll(notes, columns)
-	var buf bytes.Buffer
-	w := csv.NewWriter(&buf)
-	if err := w.Write(gridHeaders(cols)); err != nil {
-		return "", err
-	}
-	for _, n := range notes {
-		if err := w.Write(gridRow(n, cols)); err != nil {
-			return "", err
-		}
-	}
-	w.Flush()
-	if err := w.Error(); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
-}
-
 func renderJSON(notes []*EvalContext) (string, error) {
 	out := make([]map[string]any, len(notes))
 	for i, n := range notes {
@@ -111,8 +88,8 @@ func renderJSON(notes []*EvalContext) (string, error) {
 }
 
 // gridHeaders/gridRow build a PATH column plus cols, flattening any
-// nested value inline (hearth.FormatInline) since grid/toon/csv rows
-// can't recurse the way table's blocks do.
+// nested value inline (hearth.FormatInline) since grid/toon rows can't
+// recurse the way table's blocks do.
 func gridHeaders(cols []string) []string {
 	headers := make([]string, len(cols)+1)
 	headers[0] = "path"

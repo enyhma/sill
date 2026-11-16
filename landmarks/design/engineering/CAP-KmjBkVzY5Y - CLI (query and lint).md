@@ -13,7 +13,7 @@ type: cap
 
 ## Description
 
-The `sill` binary: `sill query <file.base> --format table|grid|json|toon|csv`
+The `sill` binary: `sill query <file.base> --format table|grid|json|toon`
 runs a view's filters against a vault and returns matching notes; `sill
 lint <file.base>` evaluates the assertion/threshold sidecar and exits
 accordingly. A thin wrapper per [[DEC-5xwjKMhHQC]] — no logic lives here
@@ -23,8 +23,8 @@ that isn't also reachable as a library call.
 not one: `table` is full detail (every property, nesting shown through
 indentation — see hearth's `RenderBlock`), `grid` is a compact
 column-set overview (nesting flattened inline) selected by `--fields` or
-a view's own `order:`. `json`/`toon`/`csv` are the machine-facing options
-— `json` nesting natively, `toon`/`csv` flattening like `grid` does.
+a view's own `order:`. `json`/`toon` are the machine-facing options —
+`json` nesting natively, `toon` flattening like `grid` does.
 
 ## Actor
 
@@ -39,7 +39,7 @@ is plumbing in service of making this command correct and scriptable.
 ## Acceptance Criteria
 
 - [ ] `query` output formats are stable and documented
-      (table/grid/json/toon/csv)
+      (table/grid/json/toon)
 - [ ] A column reference (`--fields` or a view's `order:`) resolves
       through the same evaluator filters use — `note.`/`file.`/
       `formula.`/bare forms all work, not just bare frontmatter
