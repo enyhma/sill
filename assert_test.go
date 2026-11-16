@@ -20,9 +20,9 @@ func TestEvalAssertion_Percentage(t *testing.T) {
 	// population: 4 non-draft notes; condition: 3 of them reviewed -> 0.75
 	notes := notesWithStatus("reviewed", "reviewed", "reviewed", "open", "draft")
 
-	res, err := EvalAssertion(a, notes)
-	if err != nil {
-		t.Fatalf("EvalAssertion: %v", err)
+	res, errs := EvalAssertion(a, notes)
+	if len(errs) > 0 {
+		t.Fatalf("EvalAssertion: %v", errs)
 	}
 	if res.PopulationCount != 4 {
 		t.Errorf("PopulationCount = %d, want 4", res.PopulationCount)
@@ -41,9 +41,9 @@ func TestEvalAssertion_Percentage(t *testing.T) {
 	}
 
 	a.Threshold = 0.9
-	res2, err := EvalAssertion(a, notes)
-	if err != nil {
-		t.Fatalf("EvalAssertion: %v", err)
+	res2, errs := EvalAssertion(a, notes)
+	if len(errs) > 0 {
+		t.Fatalf("EvalAssertion: %v", errs)
 	}
 	if res2.Passed {
 		t.Error("expected threshold 0.9 to fail at 0.75")
@@ -62,9 +62,9 @@ func TestEvalAssertion_Count(t *testing.T) {
 	}
 	notes := notesWithStatus("reviewed", "reviewed", "reviewed", "open")
 
-	res, err := EvalAssertion(a, notes)
-	if err != nil {
-		t.Fatalf("EvalAssertion: %v", err)
+	res, errs := EvalAssertion(a, notes)
+	if len(errs) > 0 {
+		t.Fatalf("EvalAssertion: %v", errs)
 	}
 	if res.SatisfiedCount != 3 || !res.Passed {
 		t.Errorf("res = %+v, want SatisfiedCount=3, Passed=true", res)
@@ -79,9 +79,9 @@ func TestEvalAssertion_EmptyPopulation(t *testing.T) {
 	}
 	notes := notesWithStatus("open")
 
-	res, err := EvalAssertion(a, notes)
-	if err != nil {
-		t.Fatalf("EvalAssertion: %v", err)
+	res, errs := EvalAssertion(a, notes)
+	if len(errs) > 0 {
+		t.Fatalf("EvalAssertion: %v", errs)
 	}
 	if res.PopulationCount != 0 || res.Percentage != 0 {
 		t.Errorf("res = %+v, want an empty population", res)
@@ -128,9 +128,9 @@ sillAssert:
 	}
 
 	notes := notesWithStatus("reviewed", "reviewed", "reviewed", "open")
-	res, err := EvalAssertion(a, notes)
-	if err != nil {
-		t.Fatalf("EvalAssertion: %v", err)
+	res, errs := EvalAssertion(a, notes)
+	if len(errs) > 0 {
+		t.Fatalf("EvalAssertion: %v", errs)
 	}
 	if !res.Passed {
 		t.Errorf("res = %+v, want passed", res)

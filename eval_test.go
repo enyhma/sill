@@ -65,6 +65,19 @@ func TestEval_UndefinedFormulaFailsLoudly(t *testing.T) {
 	}
 }
 
+// TestEval_ThisFailsLoudly is a regression test for a real, dangerous
+// bug found running kepano-obsidian's actual Genre.base: without this
+// guard, "this" silently resolved to a bare property lookup (nil, since
+// no note has a "this" property), and list(genre).contains(this) became
+// list(nil).contains(nil) == true for every single note in the vault —
+// not an error, a confidently wrong "matches everything" result.
+func TestEval_ThisFailsLoudly(t *testing.T) {
+	ctx := &EvalContext{Note: map[string]any{"genre": []any{"Jazz"}}}
+	if _, err := EvalExpr(`list(genre).contains(this)`, ctx); err == nil {
+		t.Fatal(`expected an error referencing "this", got nil (this would otherwise silently match every note)`)
+	}
+}
+
 func TestEval_PropertyResolutionForms(t *testing.T) {
 	ctx := &EvalContext{
 		Note: map[string]any{

@@ -27,12 +27,10 @@ import (
 // (no regexp() global, no literal syntax), so there is nothing to call
 // it on.
 //
-// ponytail: list.filter/map/reduce take a per-element expression, which
-// needs a lambda-binding mechanism this evaluator doesn't have (what
-// identifier does the expression bind to? not confirmed from the docs).
-// Stubbed rather than guessed. Upgrade: special-case these three in
-// eval.go's *callExpr handling (like && / || already are) to evaluate
-// the argument Expr once per element against an extended EvalContext.
+// list.filter/map/reduce are NOT dispatched here — eval.go's *callExpr
+// handling special-cases them (like && / ||) before args are evaluated,
+// since they bind "value"/"acc" per element rather than taking plain
+// pre-evaluated arguments. See evalListLambda.
 
 func callGlobal(name string, args []any, ctx *EvalContext) (any, error) {
 	switch name {
@@ -119,6 +117,14 @@ func callGlobal(name string, args []any, ctx *EvalContext) (any, error) {
 		if len(args) == 0 {
 			return nil, fmt.Errorf("list: expected 1 argument")
 		}
+		// Pass an already-list value through unchanged rather than
+		// wrapping it in a singleton. Confirmed against a real .base
+		// file: Related.base's list(this.file.links).filter(...) only
+		// makes sense (iterating each link target) if list() on an
+		// already-list value is identity, not double-wrapping.
+		if l, ok := args[0].([]any); ok {
+			return l, nil
+		}
 		return []any{args[0]}, nil
 
 	case "number":
@@ -167,8 +173,18 @@ func callMethod(target any, name string, args []any, ctx *EvalContext) (any, err
 
 	switch t := target.(type) {
 	case nil:
-		if name == "isEmpty" {
+		switch name {
+		case "isEmpty":
 			return true, nil
+		case "contains", "containsAny", "containsAll", "hasTag", "hasLink",
+			"hasProperty", "startsWith", "endsWith":
+			// A real .base file (kepano-obsidian's Books.base) calls
+			// categories.contains(...) where most notes simply don't
+			// have a categories property at all — nil, not a list. The
+			// only sensible answer to "does absolutely nothing contain
+			// X" is false, not an error that would otherwise abort
+			// evaluating every other note too.
+			return false, nil
 		}
 
 	case time.Time:
@@ -361,39 +377,29 @@ func coerceNumber(v any) (float64, error) {
 func stringMethod(s string, name string, args []any) (any, error) {
 	switch name {
 	case "contains":
-		v, err := stringArg(args, 0, "contains")
-		if err != nil {
-			return nil, err
+		if len(args) == 0 {
+			return nil, fmt.Errorf("contains: expected 1 argument")
 		}
-		return strings.Contains(s, v), nil
+		return strings.Contains(s, toDisplayString(args[0])), nil
 	case "containsAll":
-		for i := range args {
-			v, err := stringArg(args, i, "containsAll")
-			if err != nil {
-				return nil, err
-			}
-			if !strings.Contains(s, v) {
+		for _, a := range args {
+			if !strings.Contains(s, toDisplayString(a)) {
 				return false, nil
 			}
 		}
 		return true, nil
 	case "containsAny":
-		for i := range args {
-			v, err := stringArg(args, i, "containsAny")
-			if err != nil {
-				return nil, err
-			}
-			if strings.Contains(s, v) {
+		for _, a := range args {
+			if strings.Contains(s, toDisplayString(a)) {
 				return true, nil
 			}
 		}
 		return false, nil
 	case "endsWith":
-		v, err := stringArg(args, 0, "endsWith")
-		if err != nil {
-			return nil, err
+		if len(args) == 0 {
+			return nil, fmt.Errorf("endsWith: expected 1 argument")
 		}
-		return strings.HasSuffix(s, v), nil
+		return strings.HasSuffix(s, toDisplayString(args[0])), nil
 	case "isEmpty":
 		return s == "", nil
 	case "lower":
@@ -450,11 +456,10 @@ func stringMethod(s string, name string, args []any) (any, error) {
 		}
 		return out, nil
 	case "startsWith":
-		v, err := stringArg(args, 0, "startsWith")
-		if err != nil {
-			return nil, err
+		if len(args) == 0 {
+			return nil, fmt.Errorf("startsWith: expected 1 argument")
 		}
-		return strings.HasPrefix(s, v), nil
+		return strings.HasPrefix(s, toDisplayString(args[0])), nil
 	case "title":
 		return titleCase(s), nil
 	case "trim":
@@ -575,8 +580,6 @@ func listMethod(l []any, name string, args []any) (any, error) {
 			}
 		}
 		return out, nil
-	case "filter", "map", "reduce":
-		return nil, fmt.Errorf("list.%s(): not yet implemented — needs a per-element lambda-binding mechanism this evaluator doesn't have yet", name)
 	}
 	return nil, fmt.Errorf("list has no method %q", name)
 }

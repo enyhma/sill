@@ -144,6 +144,60 @@ func TestLoadVault_CrossNoteResolution(t *testing.T) {
 // hearth's DEC-LSh8yPXvpn: an Obsidian template file with Templater
 // placeholder syntax isn't valid YAML. LoadVault must skip it and still
 // return every other note, not fail the whole load.
+// TestLoadVault_LinksEmbedsBacklinks covers three fields found missing
+// (and one bug found) while testing against real vaults: file.links was
+// conflating true [[links]] with ![[embeds]] (real Obsidian keeps them
+// separate), file.embeds didn't exist at all, and file.backlinks (notes
+// that link TO this one) wasn't wired to anything despite hearth's graph
+// already computing it (graph.In).
+func TestLoadVault_LinksEmbedsBacklinks(t *testing.T) {
+	dir := t.TempDir()
+	writeNote(t, dir, "a.md", "---\n---\n\nSee [[b]] and embed ![[c]].\n")
+	writeNote(t, dir, "b.md", "---\n---\n\nAlso links [[a]].\n")
+	writeNote(t, dir, "c.md", "---\n---\n\nNo links.\n")
+
+	notes, errs := LoadVault(dir)
+	if len(errs) > 0 {
+		t.Fatalf("LoadVault: %v", errs)
+	}
+	var a, c *EvalContext
+	for _, n := range notes {
+		switch n.File.Name {
+		case "a.md":
+			a = n
+		case "c.md":
+			c = n
+		}
+	}
+
+	if len(a.File.Links) != 1 || a.File.Links[0] != "b" {
+		t.Errorf("a.File.Links = %v, want [b] (c is an embed, not a link)", a.File.Links)
+	}
+	if len(a.File.Embeds) != 1 || a.File.Embeds[0] != "c" {
+		t.Errorf("a.File.Embeds = %v, want [c]", a.File.Embeds)
+	}
+
+	if got := mustEval(t, "file.backlinks", a); toAnySliceEq(got, []string{"b.md"}) == false {
+		t.Errorf("a's backlinks = %v, want [b.md]", got)
+	}
+	if got := mustEval(t, "file.backlinks", c); toAnySliceEq(got, []string{"a.md"}) == false {
+		t.Errorf("c's backlinks = %v, want [a.md] (an embed counts as a backlink)", got)
+	}
+}
+
+func toAnySliceEq(got any, want []string) bool {
+	list, ok := got.([]any)
+	if !ok || len(list) != len(want) {
+		return false
+	}
+	for i, w := range want {
+		if list[i] != w {
+			return false
+		}
+	}
+	return true
+}
+
 func TestLoadVault_ToleratesBadNote(t *testing.T) {
 	dir := t.TempDir()
 	writeNote(t, dir, "good.md", "---\nstatus: open\n---\n\nbody\n")
@@ -155,6 +209,30 @@ func TestLoadVault_ToleratesBadNote(t *testing.T) {
 	}
 	if len(notes) != 1 || notes[0].File.Name != "good.md" {
 		t.Fatalf("notes = %+v, want just good.md", notes)
+	}
+}
+
+// TestQuery_ResilientToPerNoteFilterError reproduces a real crash found
+// running kepano-obsidian's actual Books.base: its filter calls
+// categories.contains(...), and most notes simply have no "categories"
+// property at all (nil, not a list). Before the nil.contains() => false
+// fix, that one call errored and the error aborted the ENTIRE query —
+// every other note's results lost because of one unrelated note.
+func TestQuery_ResilientToPerNoteFilterError(t *testing.T) {
+	dir := t.TempDir()
+	writeNote(t, dir, "has-categories.md", "---\ncategories: [a, b]\n---\n\nbody\n")
+	writeNote(t, dir, "no-categories.md", "---\nother: 1\n---\n\nbody\n")
+
+	base := &Base{Filters: &Filter{Statement: `categories.contains("a")`}}
+	results, warnings, err := Query(base, dir, "")
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(warnings) > 0 {
+		t.Errorf("Query warnings: %v (expected none now that nil.contains() => false)", warnings)
+	}
+	if len(results) != 1 || results[0].File.Name != "has-categories.md" {
+		t.Errorf("Query results = %+v, want just has-categories.md", results)
 	}
 }
 

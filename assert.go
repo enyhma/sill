@@ -49,13 +49,18 @@ type AssertionResult struct {
 }
 
 // EvalAssertion evaluates a's population filter and condition against
-// every note in ctxs.
-func EvalAssertion(a *Assertion, ctxs []*EvalContext) (*AssertionResult, error) {
+// every note in ctxs. A note whose population or condition filter errors
+// (e.g. a property most notes simply don't have) is excluded and its
+// error returned as a non-fatal warning, not a reason to abort the whole
+// assertion — the same lesson as Query's resilience to per-note errors.
+func EvalAssertion(a *Assertion, ctxs []*EvalContext) (*AssertionResult, []error) {
 	res := &AssertionResult{}
+	var warnings []error
 	for _, ctx := range ctxs {
 		inPop, err := EvalFilter(&a.Population, ctx)
 		if err != nil {
-			return nil, err
+			warnings = append(warnings, fmt.Errorf("%s: %w", ctx.File.Path, err))
+			continue
 		}
 		if !inPop {
 			continue
@@ -63,7 +68,8 @@ func EvalAssertion(a *Assertion, ctxs []*EvalContext) (*AssertionResult, error) 
 		res.PopulationCount++
 		ok, err := EvalFilter(&a.Condition, ctx)
 		if err != nil {
-			return nil, err
+			warnings = append(warnings, fmt.Errorf("%s: %w", ctx.File.Path, err))
+			continue
 		}
 		if ok {
 			res.SatisfiedCount++
@@ -77,7 +83,7 @@ func EvalAssertion(a *Assertion, ctxs []*EvalContext) (*AssertionResult, error) 
 	} else {
 		res.Passed = res.Percentage >= a.Threshold
 	}
-	return res, nil
+	return res, warnings
 }
 
 // ExitCode maps an AssertionResult to sill's documented, stable lint exit

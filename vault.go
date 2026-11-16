@@ -33,7 +33,8 @@ func LoadVault(dir string) ([]*EvalContext, []error) {
 
 	graph := hearth.BuildGraph(notes, path, body, identity)
 	vault := &Vault{
-		LinksTo: graph.LinksTo,
+		LinksTo:   graph.LinksTo,
+		Backlinks: graph.In,
 		Resolve: func(query string) (fileRef, bool) {
 			matches := hearth.Match(notes, identity, query)
 			if len(matches) != 1 {
@@ -99,6 +100,7 @@ func buildFileRef(n *hearth.Note, vaultDir string) (fileRef, error) {
 	if frontmatter == nil {
 		frontmatter = map[string]any{}
 	}
+	links, embeds := linksAndEmbeds(n.Body)
 
 	return fileRef{
 		Path: rel,
@@ -113,18 +115,44 @@ func buildFileRef(n *hearth.Note, vaultDir string) (fileRef, error) {
 			CTime:    info.ModTime(), // ponytail: no portable creation time in os.FileInfo; mtime stands in.
 			MTime:    info.ModTime(),
 			Tags:     extractTags(frontmatter, n.Body),
-			Links:    linkTargets(n.Body),
+			Links:    links,
+			Embeds:   embeds,
 		},
 	}, nil
 }
 
-func linkTargets(body string) []string {
-	refs := hearth.Extract(body)
-	out := make([]string, len(refs))
-	for i, r := range refs {
-		out[i] = r.Target
+// linksAndEmbeds splits body's [[wikilink]] references into true links
+// and ![[embeds]] — a distinction hearth.Extract doesn't make (it treats
+// both as the same Ref, matching hearth's type-agnostic, link-syntax-
+// agnostic design), but Obsidian's own file.links vs file.embeds does.
+// hearth.BuildGraph's backlink graph still treats both as edges — an
+// embed is still a real reference for link.linksTo()/backlinks purposes,
+// Obsidian's own graph view does the same.
+var embedRe = regexp.MustCompile(`!\[\[([^\]|]+)(?:\|[^\]]*)?\]\]`)
+
+func linksAndEmbeds(body string) (links, embeds []string) {
+	embedSet := make(map[string]bool)
+	inFence := false
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		for _, m := range embedRe.FindAllStringSubmatch(line, -1) {
+			target := strings.TrimSpace(m[1])
+			embeds = append(embeds, target)
+			embedSet[target] = true
+		}
 	}
-	return out
+	for _, r := range hearth.Extract(body) {
+		if !embedSet[r.Target] {
+			links = append(links, r.Target)
+		}
+	}
+	return links, embeds
 }
 
 var inlineTagRe = regexp.MustCompile(`#([A-Za-z0-9_/-]+)`)
@@ -178,11 +206,15 @@ func extractTags(note map[string]any, body string) []string {
 // viewName selects the first view if the base has one; a base with no
 // views and no viewName just applies the global filters.
 //
-// The returned []error are non-fatal per-note load warnings (see
-// LoadVault) — notes that failed to parse are simply absent from the
-// results, not a reason to fail the whole query. The final error return
-// is reserved for a genuinely fatal problem (an unknown --view name, or
-// a filter/formula evaluation error).
+// The returned []error are non-fatal warnings: notes that failed to
+// parse (see LoadVault) or that errored while being filtered are simply
+// absent from the results, not a reason to fail the whole query — a
+// real .base file (kepano-obsidian's Books.base) filters on
+// categories.contains(...) where most notes simply lack a categories
+// property; one note's filter blowing up must not blank every other
+// note's results, the same lesson as hearth's DEC-LSh8yPXvpn. The final
+// error return is reserved for a genuinely fatal problem not tied to any
+// one note (an unknown --view name).
 func Query(base *Base, vaultDir, viewName string) ([]*EvalContext, []error, error) {
 	notes, warnings := LoadVault(vaultDir)
 	for _, ctx := range notes {
@@ -198,7 +230,8 @@ func Query(base *Base, vaultDir, viewName string) ([]*EvalContext, []error, erro
 	for _, ctx := range notes {
 		ok, err := EvalFilter(base.Filters, ctx)
 		if err != nil {
-			return nil, warnings, err
+			warnings = append(warnings, fmt.Errorf("%s: %w", ctx.File.Path, err))
+			continue
 		}
 		if !ok {
 			continue
@@ -206,7 +239,8 @@ func Query(base *Base, vaultDir, viewName string) ([]*EvalContext, []error, erro
 		if view != nil {
 			ok, err = EvalFilter(view.Filters, ctx)
 			if err != nil {
-				return nil, warnings, err
+				warnings = append(warnings, fmt.Errorf("%s: %w", ctx.File.Path, err))
+				continue
 			}
 			if !ok {
 				continue
@@ -248,6 +282,6 @@ func Lint(base *Base, vaultDir string) (*AssertionResult, []error, error) {
 	for _, ctx := range notes {
 		ctx.Formulas = base.Formulas
 	}
-	res, err := EvalAssertion(a, notes)
-	return res, warnings, err
+	res, evalWarnings := EvalAssertion(a, notes)
+	return res, append(warnings, evalWarnings...), nil
 }

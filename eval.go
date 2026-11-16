@@ -14,7 +14,7 @@ type FileMeta struct {
 	Name, Basename, Path, Folder, Ext string
 	Size                              int64
 	CTime, MTime                      time.Time
-	Tags, Links                       []string
+	Tags, Links, Embeds               []string
 }
 
 // EvalContext is what a filter/formula expression evaluates against: one
@@ -31,7 +31,29 @@ type EvalContext struct {
 	Formulas map[string]string
 	Vault    *Vault
 
+	// Locals binds lambda parameters for list.filter/map/reduce — "value"
+	// (the current element) and, for reduce, "acc" (the running
+	// accumulator). Checked before falling back to a bare-identifier
+	// note-property lookup. nil outside of a filter/map/reduce callback.
+	Locals map[string]any
+
 	formulaCache map[string]any
+}
+
+// withLocals returns a shallow copy of ctx with extra bound into Locals —
+// used by evalListLambda to bind "value"/"acc" per element without
+// mutating the caller's context or its outer Locals.
+func (ctx *EvalContext) withLocals(extra map[string]any) *EvalContext {
+	locals := make(map[string]any, len(ctx.Locals)+len(extra))
+	for k, v := range ctx.Locals {
+		locals[k] = v
+	}
+	for k, v := range extra {
+		locals[k] = v
+	}
+	next := *ctx
+	next.Locals = locals
+	return &next
 }
 
 // Vault is the cross-note capability a loaded set of notes provides.
@@ -42,6 +64,10 @@ type Vault struct {
 	// LinksTo reports whether the note at path a's wikilinks resolve to
 	// path b — backed by hearth's backlink graph.
 	LinksTo func(a, b string) bool
+	// Backlinks returns the paths of every note whose wikilinks resolve
+	// to path — backed by hearth's backlink graph (the reverse of
+	// LinksTo). Powers file.backlinks.
+	Backlinks func(path string) []string
 	// Resolve looks up a note by path, name, or wikilink-style query,
 	// returning (zero, false) when it doesn't resolve to exactly one note.
 	Resolve func(query string) (fileRef, bool)
@@ -165,7 +191,21 @@ func eval(e Expr, ctx *EvalContext) (any, error) {
 			return fileRoot{}, nil
 		case "formula":
 			return formulaRoot{}, nil
+		case "this":
+			// "this" refers to the note a Base view is embedded in (e.g.
+			// ![[Related.base#Related]] inside some host note) — a
+			// different note than the row being evaluated. sill has no
+			// embedding mechanism and nothing sets this yet. Erroring
+			// loudly here matters: silently falling through to a bare
+			// property lookup made list(genre).contains(this) evaluate
+			// to list(nil).contains(nil) == true for every single note
+			// in a real vault (kepano-obsidian's Genre.base) — a
+			// confidently wrong result, not an absence of one.
+			return nil, fmt.Errorf(`"this" is not yet supported — needs a way to specify the host note a .base view is evaluated within`)
 		default:
+			if v, ok := ctx.Locals[n.Name]; ok {
+				return v, nil // "value"/"acc" inside a filter/map/reduce callback
+			}
 			return ctx.Note[n.Name], nil // bare shorthand for note.<name>
 		}
 
@@ -189,6 +229,23 @@ func eval(e Expr, ctx *EvalContext) (any, error) {
 		return evalMember(t, key, ctx)
 
 	case *callExpr:
+		// list.filter/map/reduce bind "value" (and, for reduce, "acc") to
+		// a per-element context — their argument expressions must NOT be
+		// evaluated eagerly against the outer ctx, unlike every other
+		// function/method call.
+		if n.Target != nil && (n.Name == "filter" || n.Name == "map" || n.Name == "reduce") {
+			t, err := eval(n.Target, ctx)
+			if err != nil {
+				return nil, err
+			}
+			if list, ok := t.([]any); ok {
+				return evalListLambda(list, n.Name, n.Args, ctx)
+			}
+			// Not a list: fall through so the normal dispatch below
+			// produces its usual "no such method" error for whatever
+			// type t actually is.
+		}
+
 		args := make([]any, len(n.Args))
 		for i, a := range n.Args {
 			v, err := eval(a, ctx)
@@ -262,13 +319,19 @@ func evalMember(target any, name string, ctx *EvalContext) (any, error) {
 	case noteRoot:
 		return ctx.Note[name], nil
 	case fileRoot:
-		if name == "properties" {
+		switch name {
+		case "properties":
 			return ctx.Note, nil
+		case "backlinks":
+			return backlinksOf(ctx.Vault, ctx.File.Path), nil
 		}
 		return evalFileField(ctx.File, name)
 	case fileRef:
-		if name == "properties" {
+		switch name {
+		case "properties":
 			return t.Note, nil
+		case "backlinks":
+			return backlinksOf(ctx.Vault, t.Path), nil
 		}
 		return evalFileField(t.File, name)
 	case formulaRoot:
@@ -277,6 +340,78 @@ func evalMember(target any, name string, ctx *EvalContext) (any, error) {
 		return t[name], nil
 	default:
 		return evalField(target, name)
+	}
+}
+
+// backlinksOf looks up the paths of every note whose wikilinks resolve to
+// path. Without a loaded vault (Vault is nil in a standalone EvalContext)
+// there's nothing to compute it from, so it's an empty list rather than
+// an error — same posture as a missing property.
+func backlinksOf(vault *Vault, path string) []any {
+	if vault == nil || vault.Backlinks == nil {
+		return nil
+	}
+	return toAnySlice(vault.Backlinks(path))
+}
+
+// evalListLambda implements list.filter/map/reduce, binding "value" (the
+// current element) and, for reduce, "acc" (the running accumulator) as
+// Locals for each per-element evaluation of args[0]. Confirmed against a
+// real .base file (kepano/kepano-obsidian's Related.base uses
+// list(...).filter(list(...).containsAny(value))) — "value" is the
+// documented parameter name for list.filter/map, used literally as the
+// bound identifier, not just descriptive prose.
+func evalListLambda(list []any, name string, args []Expr, ctx *EvalContext) (any, error) {
+	switch name {
+	case "filter":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("filter: expected 1 argument, got %d", len(args))
+		}
+		var out []any
+		for _, elem := range list {
+			v, err := eval(args[0], ctx.withLocals(map[string]any{"value": elem}))
+			if err != nil {
+				return nil, err
+			}
+			if isTruthy(v) {
+				out = append(out, elem)
+			}
+		}
+		return out, nil
+
+	case "map":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("map: expected 1 argument, got %d", len(args))
+		}
+		out := make([]any, len(list))
+		for i, elem := range list {
+			v, err := eval(args[0], ctx.withLocals(map[string]any{"value": elem}))
+			if err != nil {
+				return nil, err
+			}
+			out[i] = v
+		}
+		return out, nil
+
+	case "reduce":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("reduce: expected 2 arguments, got %d", len(args))
+		}
+		acc, err := eval(args[1], ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, elem := range list {
+			inner := ctx.withLocals(map[string]any{"value": elem, "acc": acc})
+			acc, err = eval(args[0], inner)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return acc, nil
+
+	default:
+		return nil, fmt.Errorf("list has no method %q", name)
 	}
 }
 
@@ -302,6 +437,8 @@ func evalFileField(f FileMeta, name string) (any, error) {
 		return toAnySlice(f.Tags), nil
 	case "links":
 		return toAnySlice(f.Links), nil
+	case "embeds":
+		return toAnySlice(f.Embeds), nil
 	default:
 		return nil, fmt.Errorf("file has no field %q", name)
 	}

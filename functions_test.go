@@ -48,6 +48,22 @@ func TestFunctions_String(t *testing.T) {
 	}
 }
 
+// TestFunctions_StringContainsNonStringArg reproduces a real crash found
+// running kepano-obsidian's actual Books.base: its filter calls
+// categories.contains(link("Books")) — categories is a string on some
+// notes (a single category, e.g. "[[People]]") and a list on others.
+// Before this fix, string.contains() required args[0] to be a literal
+// Go string and errored on a link value instead of coercing it.
+func TestFunctions_StringContainsNonStringArg(t *testing.T) {
+	ctx := &EvalContext{Note: map[string]any{"s": "see [[Books]] here"}}
+	if got := mustEval(t, `s.contains(link("Books"))`, ctx); got != true {
+		t.Errorf(`s.contains(link("Books")) = %v, want true`, got)
+	}
+	if got := mustEval(t, `s.contains(link("Nope"))`, ctx); got != false {
+		t.Errorf(`s.contains(link("Nope")) = %v, want false`, got)
+	}
+}
+
 func TestFunctions_Number(t *testing.T) {
 	ctx := &EvalContext{Note: map[string]any{}}
 	cases := map[string]any{
@@ -170,16 +186,55 @@ func TestFunctions_GlobalMisc(t *testing.T) {
 	}
 }
 
-func TestFunctions_LambdaMethodsNotYetImplemented(t *testing.T) {
-	ctx := &EvalContext{Note: map[string]any{"l": []any{1.0, 2.0}}}
-	for _, expr := range []string{
-		`l.filter(true)`,
-		`l.map(1)`,
-		`l.reduce(1, 0)`,
-	} {
-		if _, err := EvalExpr(expr, ctx); err == nil {
-			t.Errorf("%s: expected a not-yet-implemented error, got nil", expr)
-		}
+// TestFunctions_ListLambdas verifies filter/map/reduce bind "value" (and,
+// for reduce, "acc") as documented — confirmed against a real .base file
+// (kepano/kepano-obsidian's Related.base uses
+// list(...).filter(list(...).containsAny(value))), not guessed.
+func TestFunctions_ListLambdas(t *testing.T) {
+	ctx := &EvalContext{Note: map[string]any{"l": []any{1.0, 2.0, 3.0, 4.0}}}
+
+	filtered := mustEval(t, `l.filter(value > 2)`, ctx).([]any)
+	if len(filtered) != 2 || filtered[0] != 3.0 || filtered[1] != 4.0 {
+		t.Errorf("filter(value > 2) = %v", filtered)
+	}
+
+	mapped := mustEval(t, `l.map(value * 10)`, ctx).([]any)
+	if len(mapped) != 4 || mapped[0] != 10.0 || mapped[3] != 40.0 {
+		t.Errorf("map(value * 10) = %v", mapped)
+	}
+
+	sum := mustEval(t, `l.reduce(acc + value, 0)`, ctx)
+	if sum != 10.0 {
+		t.Errorf("reduce(acc + value, 0) = %v, want 10", sum)
+	}
+
+	// Outside a filter/map/reduce callback, "value"/"acc" are ordinary
+	// bare property lookups (nil, since this note has neither), not
+	// magically bound.
+	if got := mustEval(t, `value`, ctx); got != nil {
+		t.Errorf("bare value outside a callback = %v, want nil", got)
+	}
+}
+
+// TestFunctions_ListLambdas_RelatedBaseShape reproduces the formula from
+// kepano/kepano-obsidian's real Related.base almost verbatim:
+//
+//	list(this.file.links).filter(list(file.links).containsAny(value))
+//
+// — the outgoing links of a host note ("this"), kept only where the
+// current row also links to that same target. This only produces the
+// right 1 overlapping target (not 3, and not a single all-or-nothing
+// result) if list() on an already-list value is identity rather than a
+// singleton wrap, confirming that fix against the real shape.
+func TestFunctions_ListLambdas_RelatedBaseShape(t *testing.T) {
+	ctx := &EvalContext{Note: map[string]any{
+		"links":     []any{"B", "C", "D"}, // this row's own outgoing links
+		"hostLinks": []any{"A", "B", "C"}, // the host ("this") note's outgoing links
+	}}
+
+	got := mustEval(t, `list(hostLinks).filter(list(links).containsAny(value))`, ctx).([]any)
+	if len(got) != 2 || got[0] != "B" || got[1] != "C" {
+		t.Errorf("got %v, want [B C] (the overlap between A,B,C and B,C,D)", got)
 	}
 }
 
