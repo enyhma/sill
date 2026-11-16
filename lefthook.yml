@@ -1,0 +1,12 @@
+# cairn hooks (added by cairn init)
+pre-commit:
+  commands:
+    cairn-check:
+      run: cairn check
+      fail_text: "cairn check failed — fix graph integrity issues before committing"
+
+commit-msg:
+  commands:
+    cairn-ref:
+      run: cairn commit-msg {1}
+      fail_text: "commit-msg hook failed — missing or invalid cairn reference"

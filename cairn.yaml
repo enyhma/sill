@@ -1,0 +1,28 @@
+version: "1.0"
+project: sill
+layout:
+  root: landmarks
+  design: design
+  work: backlog
+  operations: operations
+
+include_types: [cap]
+# pretty: false                              # force pretty output (colors, borders)
+# pager: less                               # pager command (overrides $PAGER)
+# highlighter: bat                          # syntax highlighter for cat/show
+
+# similarity:
+#   embedding:
+#     provider: ollama                      # ollama | openai | custom
+#     model: nomic-embed-text
+#     endpoint: http://localhost:11434
+#     api_key_env: OPENAI_API_KEY           # env var holding the API key
+#     cache: .cairn/embeddings-cache.json
+
+# schemas:
+#   builtin: default                        # default | minimal
+#   custom:
+#     - path: ./my-schema.yaml
+
+# validation:
+#   strict: false                           # treat warnings as errors
