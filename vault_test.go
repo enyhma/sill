@@ -200,6 +200,107 @@ func toAnySliceEq(got any, want []string) bool {
 	return true
 }
 
+// TestLoadVault_FrontmatterWikilinkResolves reproduces the real pattern
+// from kepano-obsidian's vault — categories: ["[[Albums]]"] — and
+// confirms it resolves through file.hasLink/backlinks the same way a
+// body-text [[wikilink]] does.
+func TestLoadVault_FrontmatterWikilinkResolves(t *testing.T) {
+	dir := t.TempDir()
+	writeNote(t, dir, "a.md", "---\ncategories:\n  - \"[[Albums]]\"\n---\n\nbody\n")
+	writeNote(t, dir, "Albums.md", "---\n---\n\nbody\n")
+
+	notes, errs := LoadVault(dir)
+	if len(errs) > 0 {
+		t.Fatalf("LoadVault: %v", errs)
+	}
+	var a *EvalContext
+	for _, n := range notes {
+		if n.File.Name == "a.md" {
+			a = n
+		}
+	}
+	if got := mustEval(t, `file.hasLink("Albums")`, a); got != true {
+		t.Errorf(`file.hasLink("Albums") = %v, want true`, got)
+	}
+	if got, err := EvalExpr(`file.backlinks`, &EvalContext{File: FileMeta{Path: "Albums.md"}, Vault: a.Vault}); err != nil || !toAnySliceEq(got, []string{"a.md"}) {
+		t.Errorf("Albums.md backlinks = %v, %v, want [a.md]", got, err)
+	}
+}
+
+// TestLoadVault_WikilinkFragmentResolves reproduces the real embed shape
+// from kepano-obsidian's Kyoto.md: ![[Trips.base#Location]] — the
+// fragment must not prevent Trips.base.md itself from resolving.
+func TestLoadVault_WikilinkFragmentResolves(t *testing.T) {
+	dir := t.TempDir()
+	writeNote(t, dir, "Kyoto.md", "---\n---\n\n![[Trips.base#Location]]\n")
+	writeNote(t, dir, "Trips.base.md", "---\n---\n\nbody\n")
+
+	notes, errs := LoadVault(dir)
+	if len(errs) > 0 {
+		t.Fatalf("LoadVault: %v", errs)
+	}
+	var kyoto *EvalContext
+	for _, n := range notes {
+		if n.File.Name == "Kyoto.md" {
+			kyoto = n
+		}
+	}
+	if got := mustEval(t, `file("Trips.base").name`, kyoto); got != "Trips.base.md" {
+		t.Errorf(`file("Trips.base").name = %v, want Trips.base.md (fragment stripped)`, got)
+	}
+}
+
+// TestLoadVault_AliasResolves confirms a note is resolvable by its own
+// aliases: entry, not just its filename.
+func TestLoadVault_AliasResolves(t *testing.T) {
+	dir := t.TempDir()
+	writeNote(t, dir, "Full Name.md", "---\naliases:\n  - Nickname\n---\n\nbody\n")
+	writeNote(t, dir, "ref.md", "---\n---\n\nSee [[Nickname]].\n")
+
+	notes, errs := LoadVault(dir)
+	if len(errs) > 0 {
+		t.Fatalf("LoadVault: %v", errs)
+	}
+	var ref *EvalContext
+	for _, n := range notes {
+		if n.File.Name == "ref.md" {
+			ref = n
+		}
+	}
+	if got := mustEval(t, `file.hasLink("Nickname")`, ref); got != true {
+		t.Errorf(`file.hasLink("Nickname") = %v`, got)
+	}
+	if got := mustEval(t, `file("Nickname").name`, ref); got != "Full Name.md" {
+		t.Errorf(`file("Nickname").name = %v, want Full Name.md (alias resolved)`, got)
+	}
+}
+
+// TestLoadVault_AssetResolves confirms a wikilink/embed targeting a
+// non-.md file (an image, here) resolves to something, even though
+// ParseDir never walks it as a note — the real, extremely common case
+// of a ![[cover.webp]] embed.
+func TestLoadVault_AssetResolves(t *testing.T) {
+	dir := t.TempDir()
+	writeNote(t, dir, "a.md", "---\n---\n\n![[cover.webp]]\n")
+	if err := os.WriteFile(filepath.Join(dir, "cover.webp"), []byte("not a real image"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	notes, errs := LoadVault(dir)
+	if len(errs) > 0 {
+		t.Fatalf("LoadVault: %v", errs)
+	}
+	a := notes[0]
+	if len(a.File.Embeds) != 1 || a.File.Embeds[0] != "cover.webp" {
+		t.Fatalf("a.File.Embeds = %v, want [cover.webp]", a.File.Embeds)
+	}
+	resolved := mustEval(t, `file("cover.webp")`, a)
+	fr, ok := resolved.(fileRef)
+	if !ok || fr.File.Name != "cover.webp" || fr.File.Ext != "webp" {
+		t.Fatalf(`file("cover.webp") = %#v`, resolved)
+	}
+}
+
 func TestLoadVault_ToleratesBadNote(t *testing.T) {
 	dir := t.TempDir()
 	writeNote(t, dir, "good.md", "---\nstatus: open\n---\n\nbody\n")

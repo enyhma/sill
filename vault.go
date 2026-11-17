@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/enyhma/hearth"
 )
@@ -29,22 +30,36 @@ func LoadVault(dir string) ([]*EvalContext, []error) {
 	// have rel paths (fileRef.Path, FileMeta.Path) to query it with.
 	path := func(n *hearth.Note) string { return relPath(n, dir) }
 	body := func(n *hearth.Note) string { return n.Body }
+	frontmatter := func(n *hearth.Note) map[string]any { return n.Frontmatter }
 	identity := func(n *hearth.Note) []string { return noteIdentity(n, dir) }
 
-	graph := hearth.BuildGraph(notes, path, body, identity)
+	// assets are non-.md wikilink/embed targets (images, PDFs, canvas
+	// files) — common in real vaults, but ParseDir never walks them, so
+	// without this they're unconditionally unresolvable. They're only
+	// wired into Resolve (file()/link.asFile()), not into the graph
+	// itself: hearth.BuildGraph is generic over one item type, and an
+	// asset has no frontmatter/body to make it a T alongside *hearth.Note.
+	// link.linksTo()/file.backlinks to an asset remain unresolved — a
+	// narrower, documented gap, not silently wrong.
+	assetPaths, _ := hearth.WalkAssets([]string{dir})
+	assetIdentity := func(p string) []string { return pathIdentity(p, dir) }
+
+	graph := hearth.BuildGraph(notes, path, body, frontmatter, identity)
 	vault := &Vault{
 		LinksTo:   graph.LinksTo,
 		Backlinks: graph.In,
 		Resolve: func(query string) (fileRef, bool) {
-			matches := hearth.Match(notes, identity, query)
-			if len(matches) != 1 {
-				return fileRef{}, false
+			if matches := hearth.Match(notes, identity, query); len(matches) == 1 {
+				fr, err := buildFileRef(matches[0], dir)
+				if err != nil {
+					return fileRef{}, false
+				}
+				return fr, true
 			}
-			fr, err := buildFileRef(matches[0], dir)
-			if err != nil {
-				return fileRef{}, false
+			if matches := hearth.Match(assetPaths, assetIdentity, query); len(matches) == 1 {
+				return assetFileRef(matches[0], dir), true
 			}
-			return fr, true
+			return fileRef{}, false
 		},
 	}
 
@@ -71,14 +86,42 @@ func relPath(n *hearth.Note, vaultDir string) string {
 	return rel
 }
 
+// pathIdentity is the [relPath, fullPath, basename] triple shared by
+// notes and non-.md assets alike — the same shape noteIdentity extends
+// with aliases for notes specifically.
+func pathIdentity(p, vaultDir string) []string {
+	rel, err := filepath.Rel(vaultDir, p)
+	if err != nil {
+		rel = p
+	}
+	basename := strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
+	return []string{rel, p, basename}
+}
+
 // noteIdentity is the string set a note can be addressed by: its
-// vault-relative path, its absolute path, and its bare filename — the
-// same identity hearth.BuildGraph uses to resolve [[wikilink]] targets,
-// so file("Some Note") and a [[Some Note]] wikilink resolve consistently
-// to the same note.
+// vault-relative path, its absolute path, its bare filename, and any
+// aliases: it declares in frontmatter — the same identity
+// hearth.BuildGraph uses to resolve [[wikilink]] targets, so
+// file("Some Note") and a [[Some Note]] wikilink resolve consistently
+// to the same note. Obsidian lets [[SomeAlias]] resolve to whatever note
+// declares "SomeAlias" in its own aliases: list; that's purely a matter
+// of which identity strings a caller includes, so it needs no hearth
+// change — hearth.Match already resolves against whatever this returns.
 func noteIdentity(n *hearth.Note, vaultDir string) []string {
-	basename := strings.TrimSuffix(filepath.Base(n.Path), filepath.Ext(n.Path))
-	return []string{relPath(n, vaultDir), n.Path, basename}
+	ids := pathIdentity(n.Path, vaultDir)
+	switch v := n.Frontmatter["aliases"].(type) {
+	case string:
+		if v != "" {
+			ids = append(ids, v)
+		}
+	case []any:
+		for _, a := range v {
+			if s, ok := a.(string); ok && s != "" {
+				ids = append(ids, s)
+			}
+		}
+	}
+	return ids
 }
 
 func buildFileRef(n *hearth.Note, vaultDir string) (fileRef, error) {
@@ -100,7 +143,7 @@ func buildFileRef(n *hearth.Note, vaultDir string) (fileRef, error) {
 	if frontmatter == nil {
 		frontmatter = map[string]any{}
 	}
-	links, embeds := linksAndEmbeds(n.Body)
+	links, embeds := linksAndEmbeds(n.Body, frontmatter)
 
 	return fileRef{
 		Path: rel,
@@ -121,6 +164,46 @@ func buildFileRef(n *hearth.Note, vaultDir string) (fileRef, error) {
 	}, nil
 }
 
+// assetFileRef builds a minimal fileRef for a non-.md wikilink/embed
+// target (an image, PDF, or canvas file found by hearth.WalkAssets) —
+// no frontmatter or body to parse, just the file metadata a resolved
+// file() value can still answer: .name, .path, .ext, and so on.
+// file.hasTag()/hasProperty()-style methods just see empty data, same as
+// any note missing that property.
+func assetFileRef(assetPath, vaultDir string) fileRef {
+	rel, err := filepath.Rel(vaultDir, assetPath)
+	if err != nil {
+		rel = assetPath
+	}
+	base := filepath.Base(assetPath)
+	ext := strings.TrimPrefix(filepath.Ext(base), ".")
+	basename := strings.TrimSuffix(base, filepath.Ext(base))
+	folder := filepath.Dir(rel)
+	if folder == "." {
+		folder = ""
+	}
+	var size int64
+	var mtime time.Time
+	if info, err := os.Stat(assetPath); err == nil {
+		size = info.Size()
+		mtime = info.ModTime()
+	}
+	return fileRef{
+		Path: rel,
+		Note: map[string]any{},
+		File: FileMeta{
+			Name:     base,
+			Basename: basename,
+			Path:     rel,
+			Folder:   folder,
+			Ext:      ext,
+			Size:     size,
+			CTime:    mtime,
+			MTime:    mtime,
+		},
+	}
+}
+
 // linksAndEmbeds splits body's [[wikilink]] references into true links
 // and ![[embeds]] — a distinction hearth.Extract doesn't make (it treats
 // both as the same Ref, matching hearth's type-agnostic, link-syntax-
@@ -128,9 +211,14 @@ func buildFileRef(n *hearth.Note, vaultDir string) (fileRef, error) {
 // hearth.BuildGraph's backlink graph still treats both as edges — an
 // embed is still a real reference for link.linksTo()/backlinks purposes,
 // Obsidian's own graph view does the same.
+//
+// Frontmatter-embedded wikilinks (categories: ["[[Albums]]"]) are always
+// counted as links, never embeds — "![[..]]" inside a property value
+// has no rendering meaning the way a body embed does, so there's no
+// embed concept to apply there.
 var embedRe = regexp.MustCompile(`!\[\[([^\]|]+)(?:\|[^\]]*)?\]\]`)
 
-func linksAndEmbeds(body string) (links, embeds []string) {
+func linksAndEmbeds(body string, frontmatter map[string]any) (links, embeds []string) {
 	embedSet := make(map[string]bool)
 	inFence := false
 	for _, line := range strings.Split(body, "\n") {
@@ -151,6 +239,9 @@ func linksAndEmbeds(body string) (links, embeds []string) {
 		if !embedSet[r.Target] {
 			links = append(links, r.Target)
 		}
+	}
+	for _, r := range hearth.ExtractFrontmatter(frontmatter) {
+		links = append(links, r.Target)
 	}
 	return links, embeds
 }

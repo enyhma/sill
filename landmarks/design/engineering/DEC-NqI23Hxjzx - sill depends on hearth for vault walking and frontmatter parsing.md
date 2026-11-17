@@ -49,3 +49,10 @@ design — depending on it adds no such coupling.
 - If hearth's `Note`/`ParseDir` signatures change, sill's vault-loading
   adapter is the one call site that needs updating — contained, since
   nothing else in sill touches hearth directly.
+- The contained-blast-radius claim above held in practice: hearth's
+  `BuildGraph` later grew a `frontmatter` accessor (a breaking signature
+  change) for Obsidian-wikilink parity, and `vault.go` was the one place
+  that needed updating. `noteIdentity`/`linksAndEmbeds`/`Vault.Resolve`
+  there now also cover `aliases:` resolution, `[[Target#fragment]]`
+  stripping, and non-`.md` asset targets — all hearth primitives
+  (`ExtractFrontmatter`, `SplitFragment`, `WalkAssets`), composed here.
